@@ -43,6 +43,7 @@ from ...database.session_context import get_user_db_session, safe_rollback
 from ...utilities.type_utils import to_bool
 from ..utils import ensure_in_collection
 from ...embeddings.splitters import get_text_splitter
+from ...web_search_engines.engines.lightrag_client import LightRAGClient
 from ...web_search_engines.engines.local_embedding_manager import (
     LocalEmbeddingManager,
 )
@@ -287,6 +288,7 @@ class LibraryRAGService:
         index_type: str = "flat",
         embedding_manager: Optional["LocalEmbeddingManager"] = None,
         db_password: Optional[str] = None,
+        lightrag_client: Optional["LightRAGClient"] = None,
     ):
         """
         Initialize library RAG service for a user.
@@ -459,6 +461,7 @@ class LibraryRAGService:
         )
 
         self.rag_index_record = None
+        self.lightrag_client = lightrag_client
 
         # Initialize file integrity manager for FAISS indexes
         self.integrity_manager = FileIntegrityManager(
@@ -1441,24 +1444,39 @@ class LibraryRAGService:
     def search(
         self, query: str, collection_id: str, top_k: int
     ) -> List[SearchResult]:
-        """Semantic search within ``collection_id`` via the vector store.
+        """Semantic search via LightRAG (replaces FAISS vector search).
 
-        Runs the same verify/quarantine/dimension pre-flight as indexing
-        (through ``_get_vector_index``), then delegates to
-        ``VectorIndex.search``. ``reset_stale_state`` is left at its
-        default False — this is a read path: a transient integrity hiccup
-        during a mere search must not wipe the collection's indexed state
-        and force a full re-embed.
-
-        Callers are expected to have already confirmed the collection has
-        indexed documents (e.g. via ``get_rag_stats``) before calling this
-        — this method will otherwise create an empty RAGIndex/store for a
-        never-indexed (collection, embedding model) pair and return no
-        results, rather than raising.
+        ``collection_id`` is retained for signature compatibility but is not
+        used yet: Phase 1 runs a single LightRAG workspace (see spec open
+        question #4 on per-user/collection workspace isolation).
         """
-        collection_name = f"collection_{collection_id}"
-        vindex = self._get_vector_index(collection_id, collection_name)
-        return vindex.search(query, top_k)
+        if self.lightrag_client is None:
+            raise RuntimeError("LightRAG client is not configured for this service")
+        result = self.lightrag_client.query_data(query, mode="mix", top_k=top_k)
+        if result.get("status") != "success":
+            logger.error(f"LightRAG search failed: {result.get('message')}")
+            return []
+        chunks = result.get("data", {}).get("chunks", [])
+        results = []
+        for i, chunk in enumerate(chunks):
+            file_path = chunk.get("file_path", "")
+            results.append(
+                SearchResult(
+                    chunk_id=i,
+                    text=chunk.get("content", ""),
+                    distance=0.0,
+                    metric="cosine",
+                    metadata={
+                        "source": file_path,
+                        "reference_id": chunk.get("reference_id", ""),
+                        "chunk_id": chunk.get("chunk_id", ""),
+                    },
+                    document_title=Path(file_path).name if file_path else None,
+                    source_id=chunk.get("reference_id", "") or None,
+                    source_type="document",
+                )
+            )
+        return results
 
     def get_current_index_info(
         self, collection_id: Optional[str] = None
