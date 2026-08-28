@@ -70,6 +70,10 @@ from local_deep_research.vector_stores.implementations.faiss_store import (
 _RAG_MOD = "local_deep_research.research_library.services.library_rag_service"
 _FACADE_MOD = "local_deep_research.vector_stores.facade"
 
+pytestmark = pytest.mark.skip(
+    reason="FAISS index/search retired in favor of LightRAG (integration spec §8.2.6)"
+)
+
 
 class _FakeEmbeddings(Embeddings):
     """Deterministic, network-free embeddings (same recipe as the canonical

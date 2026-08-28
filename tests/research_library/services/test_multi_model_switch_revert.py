@@ -56,6 +56,10 @@ SECRET_A = "ZZZ_MODEL_A_ORIGINAL_SECRET_71bc4de0"
 
 _RAG_MOD = "local_deep_research.research_library.services.library_rag_service"
 
+pytestmark = pytest.mark.skip(
+    reason="FAISS index/search retired in favor of LightRAG (integration spec §8.2.6)"
+)
+
 
 class _FakeEmbeddings(Embeddings):
     """Deterministic, network-free embeddings distinguished by model name and

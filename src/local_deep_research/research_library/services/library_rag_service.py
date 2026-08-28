@@ -9,6 +9,11 @@ Handles indexing and searching library documents using RAG:
 - Track RAG status in library
 """
 
+# NOTE: as of LightRAG integration, index/search route through LightRAGClient.
+# The FAISS/vector_stores/embeddings machinery (and local_search_* settings) is
+# now IDLE — retained but not called by index_document/search. Removal is a
+# deferred follow-up (spec §8.2.6 "闲置/移除").
+
 import threading
 import time
 import json
