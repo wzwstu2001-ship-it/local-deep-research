@@ -26,8 +26,13 @@ LightRAG 插入是异步 pipeline，上传后**非立即**可检索（原 FAISS 
 
 FAISS / `vector_stores/` / `embeddings/` / `local_search_*` 相关机制**闲置**（保留但不再被 `index_document` / `search` 调用），彻底删除为延后项（spec §8.2.6）。测 FAISS 索引自愈与多模型切换的 `test_index_finalize_self_heal.py`、`test_multi_model_switch_revert.py` 已标记 `skip`。
 
+## 运行时注册（已落地）
+
+`search_lightrag` 工具通过 `register_lightrag_engine()`（`rag_service_factory.py`）在启动时注册到共享命名空间；`web/app.py::main()` 与 `mcp/server.py::run_server()` 均调用，覆盖 web app 进程（LangGraph agent）与 MCP 进程。
+
 ## 开放问题（Phase 1 已知限制）
 
 1. `collection_id` 与 `force_reindex` 在 LightRAG 路径下语义弱化：Phase 1 为单 workspace，`collection_id` 保留签名但不分区（spec 开放问题 #4 多用户隔离待定）。
-2. `search_lightrag` 工具的应用启动时自动注册（§7.2 运行时接线点）尚未落地，需在应用初始化处调用一次 `register_lightrag_retriever(...)`。
-3. open-webui 接入（Tools 函数调用、LightRAG WebUI 文档管理 UI 禁用）为 Phase 2。
+2. **异步处理反馈**：`index_document` 返回 `track_id`，但 LDR 前端「处理中」状态 + `scan/status` 轮询尚未落地（spec §9）。
+3. **引用格式端到端验证**：LightRAG 返回的 source 结构到 LDR citation 的字段覆盖仅在单测层验证，未做真实服务联调（spec 开放问题 #3）。
+4. open-webui 接入（Tools 函数调用、LightRAG WebUI 文档管理 UI 禁用）为 Phase 2。
