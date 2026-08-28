@@ -1773,6 +1773,14 @@ class LibraryRAGService:
     def index_document(
         self, document_id: str, collection_id: str, force_reindex: bool = False
     ) -> Dict[str, Any]:
+        # LightRAG path: submit the document text to the LightRAG service and
+        # mark it submitted. LightRAG processes asynchronously, so chunk_count
+        # is not known at enqueue time (0 = pending). collection_id is kept for
+        # signature compatibility; Phase 1 uses a single workspace.
+        if self.lightrag_client is not None:
+            return self._index_document_via_lightrag(
+                document_id, collection_id, force_reindex
+            )
         collection_name = f"collection_{collection_id}"
         index_hash = self._get_index_hash(
             collection_name, self.embedding_model, self.embedding_provider
@@ -1782,6 +1790,72 @@ class LibraryRAGService:
             return self._index_document_locked(
                 document_id, collection_id, force_reindex
             )
+
+    def _index_document_via_lightrag(
+        self, document_id: str, collection_id: str, force_reindex: bool
+    ) -> Dict[str, Any]:
+        """Submit one document's text to LightRAG (replaces chunk+embed+FAISS)."""
+        with get_user_db_session(self.username, self.db_password) as session:
+            document = session.query(Document).filter_by(id=document_id).first()
+            if not document:
+                return {"status": "error", "error": "Document not found"}
+            if not document.text_content:
+                return {"status": "error", "error": "Document has no text content"}
+            file_source = (
+                document.title
+                or document.filename
+                or document.original_url
+                or f"document_{document_id}"
+            )
+            ensure_in_collection(session, document_id, collection_id)
+            doc_collection = (
+                session.query(DocumentCollection)
+                .filter_by(document_id=document_id, collection_id=collection_id)
+                .first()
+            )
+            if doc_collection is not None and doc_collection.indexed and not force_reindex:
+                return {
+                    "status": "skipped",
+                    "message": "Document already submitted for this collection",
+                    "chunk_count": doc_collection.chunk_count,
+                }
+            text = document.text_content
+
+        try:
+            resp = self.lightrag_client.insert_text(text, file_source=file_source)
+        except Exception as exc:
+            logger.exception("Error submitting document to LightRAG")
+            return {"status": "error", "error": f"Operation failed: {type(exc).__name__}"}
+
+        track_id = resp.get("track_id", "")
+        status = resp.get("status", "failure")
+        if status not in ("success", "partial_success"):
+            return {
+                "status": "error",
+                "error": f"LightRAG insert failed: {resp.get('message')}",
+            }
+
+        with get_user_db_session(self.username, self.db_password) as session:
+            session.query(DocumentCollection).filter_by(
+                document_id=document_id, collection_id=collection_id
+            ).update(
+                {
+                    "indexed": True,
+                    "chunk_count": 0,
+                    "last_indexed_at": datetime.now(UTC),
+                }
+            )
+            session.commit()
+
+        logger.info(
+            f"Submitted document {document_id} to LightRAG (track_id={track_id})"
+        )
+        return {
+            "status": "success",
+            "chunk_count": 0,
+            "track_id": track_id,
+            "message": "submitted to LightRAG (processing asynchronously)",
+        }
 
     def _index_one(
         self, document_id: str, collection_id: str, force_reindex: bool
