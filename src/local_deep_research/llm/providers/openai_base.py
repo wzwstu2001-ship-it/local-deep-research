@@ -53,6 +53,7 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         from ...config.thread_settings import (
             _get_optional_setting,
             NoSettingsContextError,
+            get_setting_from_snapshot,
         )
 
         settings_snapshot = kwargs.get("settings_snapshot")
@@ -144,6 +145,21 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         if kwargs.get("stream_usage") is not None:
             llm_params["stream_usage"] = kwargs["stream_usage"]
 
+        # Optional reasoning-effort passthrough for OpenAI-compatible
+        # endpoints (llama.cpp, LM Studio, vLLM, OpenAI, etc.). "none"
+        # disables the model's thinking/reasoning mode for faster responses;
+        # leave unset (empty) to use the provider/model default. Read from
+        # settings so it can be overridden per-deployment via
+        # LDR_LLM_REASONING_EFFORT.
+        try:
+            reasoning_effort = get_setting_from_snapshot(
+                "llm.reasoning_effort", None, settings_snapshot=settings_snapshot
+            )
+            if reasoning_effort:
+                llm_params["reasoning_effort"] = reasoning_effort
+        except NoSettingsContextError:
+            pass  # Optional parameter
+
         logger.info(
             f"Creating {cls.provider_name} LLM with model: {model_name}, "
             f"temperature: {temperature}, endpoint: {base_url}"
@@ -157,7 +173,10 @@ class OpenAICompatibleProvider(BaseLLMProvider):
 
         This bypasses API key checking for providers that handle auth differently.
         """
-        from ...config.thread_settings import NoSettingsContextError
+        from ...config.thread_settings import (
+            NoSettingsContextError,
+            get_setting_from_snapshot,
+        )
 
         settings_snapshot = kwargs.get("settings_snapshot")
 
@@ -214,6 +233,21 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                 llm_params["max_tokens"] = max_tokens
         except NoSettingsContextError:
             pass
+
+        # Optional reasoning-effort passthrough for OpenAI-compatible
+        # endpoints (llama.cpp, LM Studio, vLLM, OpenAI, etc.). "none"
+        # disables the model's thinking/reasoning mode for faster responses;
+        # leave unset (empty) to use the provider/model default. Read from
+        # settings so it can be overridden per-deployment via
+        # LDR_LLM_REASONING_EFFORT.
+        try:
+            reasoning_effort = get_setting_from_snapshot(
+                "llm.reasoning_effort", None, settings_snapshot=settings_snapshot
+            )
+            if reasoning_effort:
+                llm_params["reasoning_effort"] = reasoning_effort
+        except NoSettingsContextError:
+            pass  # Optional parameter
 
         return ChatOpenAI(**llm_params)
 

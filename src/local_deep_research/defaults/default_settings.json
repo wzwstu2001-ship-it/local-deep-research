@@ -481,6 +481,45 @@
         "value": 30000,
         "visible": true
     },
+    "llm.reasoning_effort": {
+        "category": "llm_parameters",
+        "description": "Reasoning/thinking effort passed to OpenAI-compatible providers (llama.cpp, LM Studio, vLLM, OpenAI, etc.). Set to 'none' to disable the model's thinking mode for faster responses; leave 'Default' to use the provider/model default. Only affects OpenAI-compatible providers.",
+        "editable": true,
+        "max_value": null,
+        "min_value": null,
+        "name": "Reasoning Effort",
+        "options": [
+            {
+                "label": "Default (model decides)",
+                "value": ""
+            },
+            {
+                "label": "None (no thinking)",
+                "value": "none"
+            },
+            {
+                "label": "Minimal",
+                "value": "minimal"
+            },
+            {
+                "label": "Low",
+                "value": "low"
+            },
+            {
+                "label": "Medium",
+                "value": "medium"
+            },
+            {
+                "label": "High",
+                "value": "high"
+            }
+        ],
+        "step": null,
+        "type": "LLM",
+        "ui_element": "select",
+        "value": "",
+        "visible": true
+    },
     "llm.context_window_unrestricted": {
         "category": "llm_parameters",
         "description": "Let cloud provider APIs manage their own token limits without a hard cap (recommended). Uncheck to enforce a specific limit via the Context Window Size setting.",
