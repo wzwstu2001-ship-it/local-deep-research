@@ -20,6 +20,20 @@ from ...database.session_context import get_user_db_session
 from ...utilities.db_utils import get_settings_manager
 from ...utilities.type_utils import to_bool
 from ..services.library_rag_service import LibraryRAGService
+from ...web_search_engines.engines.lightrag_client import (
+    DEFAULT_LIGHTRAG_BASE_URL,
+    LightRAGClient,
+)
+
+
+def _build_lightrag_client(settings) -> LightRAGClient:
+    """Build a LightRAGClient from the `lightrag.base_url` setting.
+
+    The env override is `LDR_LIGHTRAG_BASE_URL` (handled by SettingsManager's
+    check_env mapping of dotted keys to `LDR_<UPPER_SNAKE>` names).
+    """
+    base_url = settings.get_setting("lightrag.base_url") or DEFAULT_LIGHTRAG_BASE_URL
+    return LightRAGClient(base_url=base_url)
 
 
 def _get_default_text_separators(settings):
@@ -263,6 +277,7 @@ def get_rag_service(
                     normalize_vectors=coll_normalize,
                     index_type=_col(collection.index_type, default_index_type),
                     db_password=db_password,
+                    lightrag_client=_build_lightrag_client(settings),
                 )
             if collection:
                 # New collection - use defaults and store them
@@ -288,6 +303,7 @@ def get_rag_service(
                     normalize_vectors=default_normalize_vectors,
                     index_type=default_index_type,
                     db_password=db_password,
+                    lightrag_client=_build_lightrag_client(settings),
                 )
 
                 # Store settings on collection (will be done during indexing)
@@ -312,4 +328,5 @@ def get_rag_service(
             normalize_vectors=default_normalize_vectors,
             index_type=default_index_type,
             db_password=db_password,
+            lightrag_client=_build_lightrag_client(settings),
         )
