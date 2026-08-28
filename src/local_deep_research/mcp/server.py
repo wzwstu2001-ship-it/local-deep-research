@@ -1049,6 +1049,19 @@ def run_server():
     except Exception:
         logger.exception("Legacy RAG docstore migration failed at MCP startup")
 
+    # Register the shared LightRAG retriever so the MCP `search` tool resolves
+    # `engine="lightrag"` (spec §7.2 runtime wiring point). The MCP server runs
+    # in its own subprocess, so it must populate its own in-process registry.
+    # Wrapped so a registration failure never blocks the server.
+    try:
+        from ..research_library.services.rag_service_factory import (
+            register_lightrag_engine,
+        )
+
+        register_lightrag_engine()
+    except Exception:
+        logger.exception("Failed to register shared LightRAG retriever at MCP startup")
+
     mcp.run(transport="stdio")
 
 
