@@ -88,6 +88,18 @@ def main():
     # Create the Flask app and SocketIO instance
     app, socket_service = create_app()
 
+    # Register the shared LightRAG retriever so the research agent + MCP
+    # expose a `search_lightrag` tool (spec §7.2 runtime wiring point).
+    # Wrapped so a registration failure never blocks server boot.
+    try:
+        from ..research_library.services.rag_service_factory import (
+            register_lightrag_engine,
+        )
+
+        register_lightrag_engine()
+    except Exception:
+        logger.exception("Failed to register shared LightRAG retriever at startup")
+
     # Surface a cipher misconfiguration that otherwise only shows up as
     # affected users getting "Invalid username or password": a relaxed
     # SQLCipher KDF (test mode) on a deployment that already holds real user

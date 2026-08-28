@@ -36,6 +36,26 @@ def _build_lightrag_client(settings) -> LightRAGClient:
     return LightRAGClient(base_url=base_url)
 
 
+def register_lightrag_engine() -> None:
+    """Register a shared `lightrag` retriever at app startup (spec §7.2).
+
+    ``lightrag.base_url`` is a global service address (not per-user), so it is
+    read through the settings manager's env-override / JSON-default fallback
+    without a per-user DB session. Registering into the shared namespace makes
+    the ``search_lightrag`` tool visible to every user's research agent and MCP.
+    """
+    from ...web_search_engines.engines.lightrag_retriever import (
+        register_lightrag_retriever,
+    )
+
+    client = _build_lightrag_client(get_settings_manager())
+    register_lightrag_retriever(client, name="lightrag", username=None)
+    logger.info(
+        "Registered shared 'lightrag' retriever (base_url=%s)",
+        str(client._client.base_url),
+    )
+
+
 def _get_default_text_separators(settings):
     """Return configured default text separators, parsing string values if needed."""
     default_text_separators = settings.get_setting(
