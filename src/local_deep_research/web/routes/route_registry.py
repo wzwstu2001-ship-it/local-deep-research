@@ -300,6 +300,18 @@ ROUTE_REGISTRY: dict[str, Any] = {
             ),
         ],
     },
+    "openai_compat": {
+        "blueprint": "openai_compat_bp",
+        "url_prefix": "/v1",
+        "routes": [
+            (
+                "POST",
+                "/chat/completions",
+                "chat_completions",
+                "OpenAI-compatible chat (open-webui model backend)",
+            ),
+        ],
+    },
 }
 
 

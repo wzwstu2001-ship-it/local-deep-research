@@ -828,6 +828,12 @@ def register_blueprints(app):
     # Register API v1 blueprint
     app.register_blueprint(api_blueprint)  # Already has url_prefix='/api/v1'
 
+    # Register OpenAI-compatible chat blueprint (open-webui model backend)
+    from .routes.openai_compat_routes import openai_compat_bp
+
+    app.register_blueprint(openai_compat_bp)  # Already has url_prefix='/v1'
+    logger.info("OpenAI-compatible chat routes registered successfully")
+
     # Register Research Library blueprint
     from ..research_library import library_bp, rag_bp, delete_bp
 
