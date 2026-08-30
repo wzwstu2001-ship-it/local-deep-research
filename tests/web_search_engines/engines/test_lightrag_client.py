@@ -63,16 +63,24 @@ def test_query_data_returns_full_body():
     assert _client(handler).query_data("q") == payload
 
 
-def test_scan_status_gets_by_track_id():
+def test_track_status_gets_by_track_id():
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["path"] = request.url.path
-        return httpx.Response(200, json={"track_id": "t1", "status": "completed"})
+        return httpx.Response(
+            200,
+            json={
+                "track_id": "t1",
+                "documents": [{"status": "processed"}],
+                "total_count": 1,
+                "status_summary": {"processed": 1},
+            },
+        )
 
-    result = _client(handler).scan_status("t1")
-    assert captured["path"] == "/documents/scan/status/t1"
-    assert result["status"] == "completed"
+    result = _client(handler).track_status("t1")
+    assert captured["path"] == "/documents/track_status/t1"
+    assert result["status_summary"] == {"processed": 1}
 
 
 def test_connection_error_raises_lightrag_unavailable():

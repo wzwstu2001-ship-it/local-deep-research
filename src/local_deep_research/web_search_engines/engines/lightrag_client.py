@@ -1,4 +1,4 @@
-"""HTTP client for the LightRAG service (document insert, query, scan status)."""
+"""HTTP client for the LightRAG service (document insert, query, track status)."""
 
 from typing import Any, Dict, Optional
 
@@ -58,13 +58,20 @@ class LightRAGClient:
     ) -> Dict[str, Any]:
         return self._post("/query/data", {"query": query, "mode": mode, "top_k": top_k})
 
-    def scan_status(self, track_id: str) -> Dict[str, Any]:
+    def track_status(self, track_id: str) -> Dict[str, Any]:
+        """Get document processing status by the track_id returned from insert.
+
+        ``/documents/track_status/{track_id}`` reports the processing status of
+        the documents inserted under ``track_id`` (from ``/documents/text``,
+        ``/texts`` or ``/upload``). Distinct from ``/documents/scan/status``,
+        which tracks *scan* jobs.
+        """
         try:
-            resp = self._client.get(f"/documents/scan/status/{track_id}")
+            resp = self._client.get(f"/documents/track_status/{track_id}")
             resp.raise_for_status()
             return resp.json()
         except httpx.HTTPError as exc:
-            logger.error(f"LightRAG scan_status {track_id} failed: {exc}")
+            logger.error(f"LightRAG track_status {track_id} failed: {exc}")
             raise LightRAGUnavailableError(
-                f"LightRAG scan_status {track_id} failed: {exc}"
+                f"LightRAG track_status {track_id} failed: {exc}"
             ) from exc
