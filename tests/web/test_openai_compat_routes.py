@@ -84,6 +84,34 @@ def test_chat_completions_requires_chat_id(client):
     assert resp.status_code == 400
 
 
+def test_chat_completions_unresolvable_chat_id_fails_closed(client):
+    """An unresolvable chat_id is a 400, never a whole-library fallback."""
+    def _load(params, username, allow_default_settings=False):
+        params["username"] = username
+        params["settings_snapshot"] = {"_username": username}
+
+    with patch(
+        "local_deep_research.web.routes.openai_compat_routes._load_user_context_into_params",
+        side_effect=_load,
+    ), patch(
+        "local_deep_research.chat.service.ChatService"
+    ) as mock_chat_svc:
+        mock_chat_svc.return_value.get_or_create_session_collection.side_effect = (
+            RuntimeError("db down")
+        )
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "ldr",
+                "chat_id": "chat-missing",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+    assert resp.status_code == 400
+    assert "chat_id could not be resolved" in resp.get_json()["error"]["message"]
+
+
 def test_chat_completions_injects_session_collection_scope(client):
     """chat_id resolves to a collection and scopes the run to it."""
     def _load(params, username, allow_default_settings=False):
