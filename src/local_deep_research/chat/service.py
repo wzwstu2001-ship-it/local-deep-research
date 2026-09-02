@@ -23,6 +23,7 @@ from ..database.models import (
     ChatRole,
     ChatSession,
     ChatSessionStatus,
+    Collection,
     ResearchHistory,
     UserActiveResearch,
 )
@@ -487,6 +488,55 @@ class ChatService:
             logger.exception("Error getting chat session")
             raise ChatRepositoryError(
                 f"DB error reading session {session_id[:8]}..."
+            ) from exc
+
+    def get_or_create_session_collection(self, session_id: str) -> str:
+        """Return (creating if needed) the chat's dedicated collection id.
+
+        Session-scoped document isolation (spec §9): a chat owns exactly one
+        Collection, and retrieval must only search that collection. The first
+        upload/query through a chat lazily creates the collection and stamps
+        ``ChatSession.collection_id``; later calls reuse it.
+
+        Raises:
+            ChatSessionNotFound: if no row matches ``session_id`` (route layer
+                maps to 404 / openai_compat maps to 400).
+            ChatRepositoryError: if the underlying DB query fails (route layer
+                maps to 500).
+        """
+        try:
+            with get_user_db_session(self.username) as db:
+                chat = db.query(ChatSession).filter_by(id=session_id).first()
+                if chat is None:
+                    raise ChatSessionNotFound(session_id)  # noqa: TRY301 — re-raised by outer except
+
+                if chat.collection_id:
+                    return chat.collection_id
+
+                collection = Collection(
+                    id=str(uuid.uuid4()),
+                    name=f"Chat {session_id[:8]}",
+                    description="Session-scoped documents",
+                    collection_type="user_collection",
+                    is_public=False,
+                    agent_enabled=True,
+                )
+                db.add(collection)
+                db.flush()
+                chat.collection_id = collection.id
+                db.commit()
+                logger.info(
+                    f"Created collection {collection.id[:8]}... for chat "
+                    f"{session_id[:8]}... (user {self.username})"
+                )
+                return collection.id
+        except ChatSessionNotFound:
+            # Propagate as-is; this is the genuine 404 signal.
+            raise
+        except DB_EXCEPTIONS as exc:
+            logger.exception("Error resolving chat session collection")
+            raise ChatRepositoryError(
+                f"DB error resolving collection for session {session_id[:8]}..."
             ) from exc
 
     def get_session_messages(

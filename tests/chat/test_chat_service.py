@@ -964,3 +964,70 @@ class TestChatServiceGetInProgressResearchId:
         ]
         assert ResearchStatus.IN_PROGRESS in bind_values
         assert "session-xyz" in bind_values
+
+
+class TestChatServiceGetOrCreateSessionCollection:
+    """Tests for ChatService.get_or_create_session_collection.
+
+    Session isolation (spec §9): a chat owns exactly one Collection. The
+    first call lazily creates it and stamps ChatSession.collection_id;
+    later calls reuse it. An unknown session_id fails closed.
+    """
+
+    def test_creates_collection_then_reuses_it(self, mock_user_db_session):
+        """First call creates exactly one Collection and binds it; the
+        second call returns the same id without creating another."""
+        from types import SimpleNamespace
+
+        from local_deep_research.chat.service import ChatService
+
+        # One ChatSession row: the first call sees collection_id=None,
+        # stamps the new id, and the second call re-reads the stamped value.
+        session = SimpleNamespace(collection_id=None)
+        (
+            mock_user_db_session.query.return_value.filter_by.return_value.first.return_value
+        ) = session
+
+        created = []
+
+        class FakeCollection:
+            def __init__(self, **kw):
+                self.id = kw["id"]
+                self.kwargs = kw
+                created.append(self)
+
+        service = ChatService(username="testuser")
+        with patch(
+            "local_deep_research.chat.service.Collection",
+            side_effect=FakeCollection,
+        ):
+            cid1 = service.get_or_create_session_collection("s1")
+            cid2 = service.get_or_create_session_collection("s1")
+
+        # Created exactly once, and both calls returned the same id.
+        assert len(created) == 1
+        assert cid1 == cid2
+        # The returned id is the newly created collection's id, bound to
+        # the session.
+        assert cid1 == created[0].id
+        assert session.collection_id == cid1
+        # Session-scoped collections are user collections, not the library.
+        assert created[0].kwargs["collection_type"] == "user_collection"
+        assert created[0].kwargs["agent_enabled"] is True
+        assert created[0].kwargs["is_public"] is False
+
+    def test_raises_for_unknown_session(self, mock_user_db_session):
+        """Unknown session_id raises ChatSessionNotFound (fail closed) —
+        never a whole-library collection."""
+        from local_deep_research.chat.service import (
+            ChatService,
+            ChatSessionNotFound,
+        )
+
+        (
+            mock_user_db_session.query.return_value.filter_by.return_value.first.return_value
+        ) = None
+
+        service = ChatService(username="testuser")
+        with pytest.raises(ChatSessionNotFound):
+            service.get_or_create_session_collection("nonexistent-id")
