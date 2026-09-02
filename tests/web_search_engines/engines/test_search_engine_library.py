@@ -353,3 +353,132 @@ class TestClassAttributes:
         )
 
         assert LibraryRAGSearchEngine.is_local is True
+
+
+class TestSessionIsolation:
+    """Session-scoped collection isolation (spec §9 fail-closed)."""
+
+    def test_search_filters_to_session_collection_when_scoped(self):
+        """With _session_collection_id set, search() must query only that
+        collection — never the whole library."""
+        from local_deep_research.web_search_engines.engines.search_engine_library import (
+            LibraryRAGSearchEngine,
+        )
+
+        settings = {"_username": "testuser", "_session_collection_id": "col-2"}
+        all_collections = [
+            {"id": "col-1", "name": "other"},
+            {"id": "col-2", "name": "mine"},
+        ]
+
+        with patch(
+            "local_deep_research.web_search_engines.engines.search_engine_library.get_setting_from_snapshot",
+            return_value=None,
+        ), patch(
+            "local_deep_research.web_search_engines.engines.search_engine_library.get_server_url",
+            return_value="http://localhost:5000",
+        ), patch(
+            "local_deep_research.web_search_engines.engines.search_engine_library.LibraryService"
+        ) as mock_service:
+            mock_service.return_value.get_all_collections.return_value = all_collections
+
+            engine = LibraryRAGSearchEngine(settings_snapshot=settings)
+            with patch(
+                "local_deep_research.web_search_engines.engines.search_engine_library.get_user_db_session"
+            ) as mock_session:
+                mock_rag_index = Mock()
+                mock_rag_index.embedding_model = "all-MiniLM-L6-v2"
+                mock_rag_index.embedding_model_type = Mock(
+                    value="sentence_transformers"
+                )
+                mock_rag_index.chunk_size = 1000
+                mock_rag_index.chunk_overlap = 200
+                mock_session.return_value.__enter__.return_value.query.return_value.filter_by.return_value.first.return_value = mock_rag_index
+
+                with patch(
+                    "local_deep_research.web_search_engines.engines.search_engine_library.LibraryRAGService"
+                ) as mock_rag_service:
+                    mock_inst = Mock()
+                    mock_inst.get_rag_stats.return_value = {
+                        "indexed_documents": 1
+                    }
+                    mock_inst.search.return_value = []
+                    mock_rag_service.return_value.__enter__.return_value = mock_inst
+                    mock_rag_service.return_value.__exit__.return_value = None
+
+                    results = engine.search("test query")
+
+        assert results == []
+        # Fail-closed proof: only the scoped collection was ever queried.
+        searched_ids = [c.args[1] for c in mock_inst.search.call_args_list]
+        assert searched_ids == ["col-2"]
+
+    def test_search_returns_empty_when_session_collection_missing(self):
+        """If _session_collection_id names no known collection, search must NOT
+        fall back to the whole library — return []."""
+        from local_deep_research.web_search_engines.engines.search_engine_library import (
+            LibraryRAGSearchEngine,
+        )
+
+        settings = {
+            "_username": "testuser",
+            "_session_collection_id": "col-missing",
+        }
+        all_collections = [{"id": "col-1", "name": "other"}]
+
+        mock_doc = Mock()
+        mock_doc.page_content = "This is the document content for testing."
+        mock_doc.metadata = {
+            "source_id": "123",
+            "document_title": "Test Document",
+        }
+
+        with patch(
+            "local_deep_research.web_search_engines.engines.search_engine_library.get_setting_from_snapshot",
+            return_value=None,
+        ), patch(
+            "local_deep_research.web_search_engines.engines.search_engine_library.get_server_url",
+            return_value="http://localhost:5000",
+        ), patch(
+            "local_deep_research.web_search_engines.engines.search_engine_library.LibraryService"
+        ) as mock_service:
+            mock_service.return_value.get_all_collections.return_value = all_collections
+
+            engine = LibraryRAGSearchEngine(settings_snapshot=settings)
+            with patch(
+                "local_deep_research.web_search_engines.engines.search_engine_library.get_user_db_session"
+            ) as mock_session:
+                mock_rag_index = Mock()
+                mock_rag_index.embedding_model = "all-MiniLM-L6-v2"
+                mock_rag_index.embedding_model_type = Mock(
+                    value="sentence_transformers"
+                )
+                mock_rag_index.chunk_size = 1000
+                mock_rag_index.chunk_overlap = 200
+                mock_session.return_value.__enter__.return_value.query.return_value.filter_by.return_value.first.return_value = mock_rag_index
+
+                with patch(
+                    "local_deep_research.web_search_engines.engines.search_engine_library.LibraryRAGService"
+                ) as mock_rag_service:
+                    mock_inst = Mock()
+                    mock_inst.get_rag_stats.return_value = {
+                        "indexed_documents": 1
+                    }
+                    mock_inst.search.return_value = [
+                        SearchResult(
+                            chunk_id=1,
+                            text=mock_doc.page_content,
+                            distance=0.5,
+                            metric="l2",
+                            metadata=mock_doc.metadata,
+                            document_title=None,
+                            source_id=None,
+                            source_type=None,
+                        )
+                    ]
+                    mock_rag_service.return_value.__enter__.return_value = mock_inst
+                    mock_rag_service.return_value.__exit__.return_value = None
+
+                    results = engine.search("test query")
+
+        assert results == []

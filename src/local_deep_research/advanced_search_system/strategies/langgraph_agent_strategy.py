@@ -478,6 +478,22 @@ def _load_specialized_engine_tools(
             if name == skip_engine:
                 continue
 
+            # Session isolation (spec §9, fail-closed): when this run is scoped
+            # to a chat's dedicated collection, drop the whole-library tool and
+            # every OTHER collection tool. The LLM then never SEES the forbidden
+            # names (the core silent-expansion fix), and can only retrieve this
+            # chat's documents.
+            session_collection_id = (settings_snapshot or {}).get(
+                "_session_collection_id"
+            )
+            if session_collection_id:
+                if name == "library":
+                    continue
+                if name.startswith("collection_") and (
+                    name != f"collection_{session_collection_id}"
+                ):
+                    continue
+
             # Per-engine usability switch (independent of egress). Collection
             # configs carry their DB flag; built-in engines receive the
             # flattened search.engine.web.<name>.agent_enabled setting.

@@ -178,6 +178,21 @@ class LibraryRAGSearchEngine(BaseSearchEngine):
 
             # Get all collections for this user
             collections = library_service.get_all_collections()
+
+            # Session isolation (spec §9, fail-closed): when the caller scoped
+            # this run to a chat's dedicated collection, search ONLY that
+            # collection. A scoped id that matches nothing yields an empty list
+            # — never a whole-library fallback.
+            session_collection_id = self.settings_snapshot.get(
+                "_session_collection_id"
+            )
+            if session_collection_id:
+                collections = [
+                    c
+                    for c in collections
+                    if c.get("id") == session_collection_id
+                ]
+
             if not collections:
                 logger.info("No collections found for user")
                 return []
