@@ -40,10 +40,17 @@ def test_chat_completions_returns_openai_shape(client):
     with patch(
         "local_deep_research.api.research_functions.quick_summary",
         return_value={"summary": "LightRAG is a graph-based RAG framework."},
-    ):
+    ), patch(
+        "local_deep_research.chat.service.ChatService"
+    ) as mock_chat_svc:
+        mock_chat_svc.return_value.get_or_create_session_collection.return_value = "col-abc"
         resp = client.post(
             "/v1/chat/completions",
-            json={"model": "ldr", "messages": [{"role": "user", "content": "hi"}]},
+            json={
+                "model": "ldr",
+                "chat_id": "chat-1",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
         )
     assert resp.status_code == 200
     body = resp.get_json()
@@ -66,3 +73,80 @@ def test_chat_completions_requires_a_user_message(client):
 def test_chat_completions_rejects_missing_messages(client):
     resp = client.post("/v1/chat/completions", json={})
     assert resp.status_code == 400
+
+
+def test_chat_completions_requires_chat_id(client):
+    """Missing chat_id fails closed with 400 (spec §9) — never whole-library."""
+    resp = client.post(
+        "/v1/chat/completions",
+        json={"model": "ldr", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert resp.status_code == 400
+
+
+def test_chat_completions_injects_session_collection_scope(client):
+    """chat_id resolves to a collection and scopes the run to it."""
+    def _load(params, username, allow_default_settings=False):
+        params["username"] = username
+        params["settings_snapshot"] = {"_username": username}
+
+    with patch(
+        "local_deep_research.web.routes.openai_compat_routes._load_user_context_into_params",
+        side_effect=_load,
+    ), patch(
+        "local_deep_research.chat.service.ChatService"
+    ) as mock_chat_svc, patch(
+        "local_deep_research.api.research_functions.quick_summary",
+        return_value={"summary": "scoped answer"},
+    ) as mock_qs:
+        mock_chat_svc.return_value.get_or_create_session_collection.return_value = "col-abc"
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "ldr",
+                "chat_id": "chat-1",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+    assert resp.status_code == 200
+    _args, kwargs = mock_qs.call_args
+    snapshot = kwargs["settings_snapshot"]
+    assert snapshot["_session_collection_id"] == "col-abc"
+    assert snapshot["search.tool"] == "collection_col-abc"
+
+
+def test_chat_completions_scrubs_error_summary(client):
+    """An Error:-prefixed summary has credential text scrubbed at the boundary."""
+    leaked = (
+        "Error: LLM call failed: "
+        "https://api.example.com/v1?api_key=sk-SECRETKEY1234567890AB"
+    )
+
+    def _load(params, username, allow_default_settings=False):
+        params["username"] = username
+        params["settings_snapshot"] = {"_username": username}
+
+    with patch(
+        "local_deep_research.web.routes.openai_compat_routes._load_user_context_into_params",
+        side_effect=_load,
+    ), patch(
+        "local_deep_research.chat.service.ChatService"
+    ) as mock_chat_svc, patch(
+        "local_deep_research.api.research_functions.quick_summary",
+        return_value={"summary": leaked},
+    ):
+        mock_chat_svc.return_value.get_or_create_session_collection.return_value = "col-abc"
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "ldr",
+                "chat_id": "chat-1",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+    assert resp.status_code == 200
+    content = resp.get_json()["choices"][0]["message"]["content"]
+    assert "sk-SECRETKEY1234567890AB" not in content
+    assert content.startswith("Error:")

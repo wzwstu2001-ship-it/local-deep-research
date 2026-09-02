@@ -13,7 +13,11 @@ from loguru import logger
 
 from ...security.decorators import require_json_body
 from ...security.rate_limiter import api_rate_limit, get_current_username
-from ..api import _load_user_context_into_params, api_access_control
+from ..api import (
+    _load_user_context_into_params,
+    _scrub_error_fields,
+    api_access_control,
+)
 from ..openai_compat import chat_completion_response, last_user_message
 
 openai_compat_bp = Blueprint("openai_compat", __name__, url_prefix="/v1")
@@ -46,13 +50,49 @@ def chat_completions():
         # existing /api/v1/quick_summary handler.
         from ...api.research_functions import quick_summary
 
+        # Session isolation (spec §9, fail-closed): open-webui forwards the
+        # conversation id as chat_id (accept a few spellings). Missing chat_id
+        # is a 400 — a headless call must never silently search the library.
+        chat_id = (
+            data.get("chat_id")
+            or data.get("session_id")
+            or (data.get("metadata") or {}).get("chat_id")
+        )
+        if not chat_id:
+            return jsonify({"error": {"message": "chat_id is required"}}), 400
+
         username = get_current_username()
         params = {"temperature": data.get("temperature", 0.7)}
         error = _load_user_context_into_params(params, username)
         if error is not None:
             return error
 
+        # Resolve (creating if needed) the chat's dedicated collection and
+        # scope retrieval to it. Fail closed: an unresolvable chat_id is a 400.
+        from ...chat.service import ChatService
+
+        try:
+            collection_id = ChatService(username).get_or_create_session_collection(
+                chat_id
+            )
+        except Exception:
+            logger.exception("Failed to resolve chat collection for chat_id")
+            return (
+                jsonify({"error": {"message": "chat_id could not be resolved"}}),
+                400,
+            )
+
+        # Guard against an absent/non-dict snapshot: the real helper always
+        # sets a dict, but a mocked or legacy caller path may not.
+        settings_snapshot = params.setdefault("settings_snapshot", {})
+        if not isinstance(settings_snapshot, dict):
+            settings_snapshot = {}
+            params["settings_snapshot"] = settings_snapshot
+        settings_snapshot["_session_collection_id"] = collection_id
+        settings_snapshot["search.tool"] = f"collection_{collection_id}"
+
         result = quick_summary(query, **params)
+        _scrub_error_fields(result)
         return jsonify(chat_completion_response(result.get("summary", ""), model))
     except TimeoutError:
         logger.exception("OpenAI-compat chat request timed out")
