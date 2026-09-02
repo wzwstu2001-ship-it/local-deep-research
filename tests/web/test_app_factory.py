@@ -494,6 +494,23 @@ class TestCsrfProtection:
         # Should have a CSRF token endpoint
         assert len(csrf_routes) >= 0  # May not have explicit route
 
+    def test_openai_compat_blueprint_is_csrf_exempt(self, app):
+        """openai_compat must be CSRF-exempt — open-webui calls
+        /v1/chat/completions server-to-server with no browser cookie or CSRF
+        token, so the global CSRFProtect would otherwise reject it with a 400
+        CSRFError."""
+        csrf = app.extensions.get("csrf")
+        assert csrf is not None
+
+        # Flask-WTF stores blueprint-level exemptions as Blueprint objects in
+        # _exempt_blueprints (exempt() only populates _exempt_views for string
+        # or view-function args). Assert the registered blueprint object is the
+        # one exempted — this mirrors _is_exempt(), which compares the
+        # current request's blueprint object against _exempt_blueprints.
+        openai_bp = app.blueprints.get("openai_compat")
+        assert openai_bp is not None
+        assert openai_bp in csrf._exempt_blueprints
+
 
 class TestRateLimiting:
     """Tests for rate limiting."""

@@ -884,10 +884,12 @@ def register_blueprints(app):
     # silently fails to match Flask endpoint names.
     if hasattr(app, "extensions") and "csrf" in app.extensions:
         csrf = app.extensions["csrf"]
-        # Only api_v1 is exempt: it's a programmatic REST API used by
-        # external clients.  The api, benchmark, and research blueprints
-        # are browser-facing and the frontend already sends CSRF tokens.
-        for bp_name in ("api_v1",):
+        # Only api_v1 and openai_compat are exempt: they're programmatic
+        # APIs used by external clients — open-webui POSTs to
+        # /v1/chat/completions server-to-server with no browser cookie or CSRF
+        # token.  The api, benchmark, and research blueprints are
+        # browser-facing and the frontend already sends CSRF tokens.
+        for bp_name in ("api_v1", "openai_compat"):
             bp_obj = app.blueprints.get(bp_name)
             if bp_obj is not None:
                 csrf.exempt(bp_obj)
