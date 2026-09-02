@@ -2117,6 +2117,35 @@ def upload_to_collection(collection_id):
         return handle_api_error("uploading files", e)
 
 
+@rag_bp.route("/api/collections/chat/upload", methods=["POST"])
+@login_required
+@upload_rate_limit_user
+@upload_rate_limit_ip
+def chat_upload():
+    """Upload files to the chat's dedicated collection (session isolation).
+
+    open-webui (Phase 3) posts files with a chat_id; LDR resolves (creating
+    if needed) that chat's collection and reuses the existing collection
+    upload path. Missing or unresolvable chat_id fails closed — a headless
+    upload never lands in the whole-library collection (spec §9).
+    """
+    chat_id = request.form.get("chat_id") or request.args.get("chat_id")
+    if not chat_id:
+        return jsonify({"success": False, "error": "chat_id is required"}), 400
+
+    # Import here to avoid the research-stack import cycle.
+    from ...chat.service import ChatService, ChatSessionNotFound
+
+    try:
+        collection_id = ChatService(
+            session["username"]
+        ).get_or_create_session_collection(chat_id)
+    except ChatSessionNotFound:
+        return jsonify({"success": False, "error": "chat not found"}), 404
+
+    return upload_to_collection(collection_id)
+
+
 @rag_bp.route(
     "/api/collections/<string:collection_id>/documents", methods=["GET"]
 )
