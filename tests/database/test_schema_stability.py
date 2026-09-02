@@ -407,6 +407,7 @@ class TestCriticalColumns:
                 "accumulated_context",
                 "created_at",
                 "message_count",
+                "collection_id",
             },
             ChatMessage: {
                 "id",

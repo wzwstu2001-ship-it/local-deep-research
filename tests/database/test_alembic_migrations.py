@@ -6099,6 +6099,11 @@ class TestMigrationSafetyGuards:
     # parametrized stairway/residual tests and tested separately.
     NON_REVERSIBLE_REVISIONS = {
         "0010",  # 0010_add_chat_tables.py — chat schema, dev-stage rollback path: recreate DB
+        # 0031_add_chat_session_collection_id.py — downgrade raises
+        # NotImplementedError: SQLite can't cleanly drop an indexed FK column
+        # on a table that is itself an FK target (chat_messages.session_id,
+        # research_history.chat_session_id). Recreate the DB to roll back.
+        "0031",
     }
 
     def test_all_downgrades_are_substantive(self):

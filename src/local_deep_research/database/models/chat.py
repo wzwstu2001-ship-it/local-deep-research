@@ -98,6 +98,18 @@ class ChatSession(Base):
         Integer, nullable=False, default=0, server_default="0"
     )
 
+    # Session-scoped document isolation: each chat owns a dedicated
+    # Collection; retrieval may only search THAT collection. NULL means "no
+    # dedicated collection yet" — ChatService lazily creates one on first
+    # upload/query. ON DELETE SET NULL detaches the chat from a deleted
+    # collection without cascading the delete into the chat itself.
+    collection_id = Column(
+        String(36),
+        ForeignKey("collections.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     # Relationships
     messages = relationship(
         "ChatMessage",
