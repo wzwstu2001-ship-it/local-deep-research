@@ -811,3 +811,87 @@ class TestIndexAllDocuments:
 
         # force_reindex should be a parameter
         assert "force_reindex" in params or len(params) > 2
+
+
+def _make_search_service(mocker):
+    """Construct a LibraryRAGService whose search() may run FAISS.
+
+    Mirrors the established constructor-mocking pattern in this file:
+    ``embedding_manager`` injection skips the strict settings-snapshot DB
+    path while ``lightrag_client`` still falls through to its constructor
+    default of ``None``.
+    """
+    from local_deep_research.research_library.services.library_rag_service import (
+        LibraryRAGService,
+    )
+
+    mock_embedding_manager = Mock()
+    mock_embedding_manager.embeddings = Mock()
+
+    mock_splitter = Mock()
+    mocker.patch(
+        "local_deep_research.research_library.services.library_rag_service.get_text_splitter",
+        return_value=mock_splitter,
+    )
+
+    mock_integrity = Mock()
+    mocker.patch(
+        "local_deep_research.research_library.services.library_rag_service.FileIntegrityManager",
+        return_value=mock_integrity,
+    )
+
+    return LibraryRAGService(
+        username="testuser",
+        embedding_model="all-MiniLM-L6-v2",
+        embedding_provider="sentence_transformers",
+        embedding_manager=mock_embedding_manager,
+    )
+
+
+def test_search_routes_to_faiss_when_no_lightrag_client(mocker):
+    """Without a LightRAG client, search() must run FAISS against THIS
+    collection only — not raise, and not fall back to a broader search."""
+    from unittest.mock import patch
+
+    from local_deep_research.vector_stores.facade import SearchResult
+
+    svc = _make_search_service(mocker)
+    assert svc.lightrag_client is None
+
+    fake_index = Mock()
+    fake_index.search.return_value = [
+        SearchResult(
+            chunk_id=1,
+            text="the matched chunk text",
+            distance=0.1,
+            metric="cosine",
+            metadata={"source": "doc.pdf"},
+            document_title="doc.pdf",
+            source_id="doc-1",
+            source_type="document",
+        )
+    ]
+    with patch.object(
+        svc, "get_current_index_info", return_value={"embedding_model": "m"}
+    ):
+        with patch.object(
+            svc, "_get_vector_index", return_value=fake_index
+        ) as mock_gvi:
+            results = svc.search("query", "col-abc", top_k=5)
+
+    # FAISS branch must scope to the exact collection, on the read path.
+    mock_gvi.assert_called_once_with(
+        "col-abc", "collection_col-abc", reset_stale_state=False
+    )
+    assert len(results) == 1
+    assert results[0].text == "the matched chunk text"
+
+
+def test_search_fails_closed_when_collection_has_no_index(mocker):
+    """A collection with no FAISS index yields empty results — never a
+    whole-library fallback."""
+    from unittest.mock import patch
+
+    svc = _make_search_service(mocker)
+    with patch.object(svc, "get_current_index_info", return_value=None):
+        assert svc.search("query", "col-abc", top_k=5) == []

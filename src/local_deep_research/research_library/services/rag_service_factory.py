@@ -297,7 +297,6 @@ def get_rag_service(
                     normalize_vectors=coll_normalize,
                     index_type=_col(collection.index_type, default_index_type),
                     db_password=db_password,
-                    lightrag_client=_build_lightrag_client(settings),
                 )
             if collection:
                 # New collection - use defaults and store them
@@ -323,7 +322,6 @@ def get_rag_service(
                     normalize_vectors=default_normalize_vectors,
                     index_type=default_index_type,
                     db_password=db_password,
-                    lightrag_client=_build_lightrag_client(settings),
                 )
 
                 # Store settings on collection (will be done during indexing)
@@ -348,5 +346,4 @@ def get_rag_service(
             normalize_vectors=default_normalize_vectors,
             index_type=default_index_type,
             db_password=db_password,
-            lightrag_client=_build_lightrag_client(settings),
         )

@@ -421,3 +421,38 @@ class TestGetRagServiceWithCollection:
         kwargs = mock_rag_cls.call_args.kwargs
         # Default from mock_settings.get_bool_setting is True
         assert kwargs["normalize_vectors"] is True
+
+
+# ---------------------------------------------------------------------------
+# Tests — FAISS by default (no LightRAG client wiring)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def spy_rag_cls(mocker):
+    """Patch LibraryRAGService with a lightweight spy.
+
+    ``mock_rag_cls`` is a MagicMock whose return value auto-creates child
+    mocks on attribute reads, so ``svc.lightrag_client is None`` would be
+    trivially unsatisfiable there. This spy mirrors the constructor contract
+    (``lightrag_client`` kwarg defaults to ``None``) so the assertion reflects
+    what ``get_rag_service`` actually passes.
+    """
+    captured = {}
+
+    class Spy:
+        def __init__(self, **kwargs):
+            captured["kwargs"] = kwargs
+            self.lightrag_client = kwargs.get("lightrag_client")
+
+    mocker.patch(f"{FACTORY_MODULE}.LibraryRAGService", Spy)
+    return captured
+
+
+def test_get_rag_service_returns_faiss_service_by_default(
+    patch_settings, mock_db_session, spy_rag_cls
+):
+    """get_rag_service() must NOT wire a LightRAG client by default — the
+    returned service routes search() through FAISS."""
+    svc = get_rag_service("alice")
+    assert svc.lightrag_client is None

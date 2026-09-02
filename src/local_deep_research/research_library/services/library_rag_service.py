@@ -1449,39 +1449,52 @@ class LibraryRAGService:
     def search(
         self, query: str, collection_id: str, top_k: int
     ) -> List[SearchResult]:
-        """Semantic search via LightRAG (replaces FAISS vector search).
+        """Semantic search over this collection.
 
-        ``collection_id`` is retained for signature compatibility but is not
-        used yet: Phase 1 runs a single LightRAG workspace (see spec open
-        question #4 on per-user/collection workspace isolation).
+        Two backends coexist:
+
+        * ``lightrag_client is not None`` (Phase 1 opt-in) routes to LightRAG's
+          ``query_data`` and maps its chunks onto ``SearchResult``. Kept for the
+          ``search_lightrag`` retriever path, which sets the client explicitly.
+        * otherwise (the default) runs FAISS against THIS collection's index
+          only — ``collection_id`` is authoritative and there is no whole-library
+          fallback (fail-closed, spec §9).
         """
-        if self.lightrag_client is None:
-            raise RuntimeError("LightRAG client is not configured for this service")
-        result = self.lightrag_client.query_data(query, mode="mix", top_k=top_k)
-        if result.get("status") != "success":
-            logger.error(f"LightRAG search failed: {result.get('message')}")
-            return []
-        chunks = result.get("data", {}).get("chunks", [])
-        results = []
-        for i, chunk in enumerate(chunks):
-            file_path = chunk.get("file_path", "")
-            results.append(
-                SearchResult(
-                    chunk_id=i,
-                    text=chunk.get("content", ""),
-                    distance=0.0,
-                    metric="cosine",
-                    metadata={
-                        "source": file_path,
-                        "reference_id": chunk.get("reference_id", ""),
-                        "chunk_id": chunk.get("chunk_id", ""),
-                    },
-                    document_title=Path(file_path).name if file_path else None,
-                    source_id=chunk.get("reference_id", "") or None,
-                    source_type="document",
+        if self.lightrag_client is not None:
+            result = self.lightrag_client.query_data(query, mode="mix", top_k=top_k)
+            if result.get("status") != "success":
+                logger.error(f"LightRAG search failed: {result.get('message')}")
+                return []
+            chunks = result.get("data", {}).get("chunks", [])
+            results = []
+            for i, chunk in enumerate(chunks):
+                file_path = chunk.get("file_path", "")
+                results.append(
+                    SearchResult(
+                        chunk_id=i,
+                        text=chunk.get("content", ""),
+                        distance=0.0,
+                        metric="cosine",
+                        metadata={
+                            "source": file_path,
+                            "reference_id": chunk.get("reference_id", ""),
+                            "chunk_id": chunk.get("chunk_id", ""),
+                        },
+                        document_title=Path(file_path).name if file_path else None,
+                        source_id=chunk.get("reference_id", "") or None,
+                        source_type="document",
+                    )
                 )
-            )
-        return results
+            return results
+
+        # FAISS path. Fail closed: no index for this collection → no results.
+        if self.get_current_index_info(collection_id) is None:
+            return []
+        collection_name = f"collection_{collection_id}"
+        vector_index = self._get_vector_index(
+            collection_id, collection_name, reset_stale_state=False
+        )
+        return vector_index.search(query, top_k)
 
     def get_current_index_info(
         self, collection_id: Optional[str] = None
