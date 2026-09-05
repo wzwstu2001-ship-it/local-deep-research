@@ -66,3 +66,22 @@ def test_chat_upload_unknown_chat_returns_404(app):
             content_type="multipart/form-data",
         )
     assert resp.status_code == 404
+
+
+def test_chat_upload_open_mode_without_session(app):
+    """Open mode: chat_upload must run without a login session."""
+    client = app.test_client()
+    with patch(
+        "local_deep_research.chat.service.ChatService"
+    ) as mock_svc, patch(
+        "local_deep_research.research_library.routes.rag_routes.upload_to_collection"
+    ) as mock_upload:
+        mock_svc.return_value.get_or_create_session_collection.return_value = "col-abc"
+        mock_upload.return_value = ({"success": True}, 200)
+        resp = client.post(
+            "/library/api/collections/chat/upload",
+            data={"chat_id": "chat-1", "files": [(BytesIO(b"x"), "a.txt")]},
+            content_type="multipart/form-data",
+        )
+    assert resp.status_code == 200
+    mock_svc.return_value.get_or_create_session_collection.assert_called_once_with("chat-1")

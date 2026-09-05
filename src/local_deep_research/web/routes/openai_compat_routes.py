@@ -12,11 +12,11 @@ from flask import Blueprint, jsonify, request
 from loguru import logger
 
 from ...security.decorators import require_json_body
-from ...security.rate_limiter import api_rate_limit, get_current_username
+from ...security.rate_limiter import api_rate_limit
 from ..api import (
     _load_user_context_into_params,
     _scrub_error_fields,
-    api_access_control,
+    get_openai_compat_username,
 )
 from ..openai_compat import chat_completion_response, last_user_message
 
@@ -24,7 +24,6 @@ openai_compat_bp = Blueprint("openai_compat", __name__, url_prefix="/v1")
 
 
 @openai_compat_bp.route("/chat/completions", methods=["POST"])
-@api_access_control
 @api_rate_limit
 @require_json_body(error_message="messages are required")
 def chat_completions():
@@ -61,7 +60,7 @@ def chat_completions():
         if not chat_id:
             return jsonify({"error": {"message": "chat_id is required"}}), 400
 
-        username = get_current_username()
+        username = get_openai_compat_username()
         params = {"temperature": data.get("temperature", 0.7)}
         error = _load_user_context_into_params(params, username)
         if error is not None:

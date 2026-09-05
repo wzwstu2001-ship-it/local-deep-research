@@ -15,6 +15,14 @@ def _fake_db(username):
 
 
 @pytest.fixture
+def app():
+    app = flask.Flask(__name__)
+    app.config["TESTING"] = True
+    app.register_blueprint(openai_compat_bp)
+    return app
+
+
+@pytest.fixture
 def client():
     app = flask.Flask(__name__)
     app.config["TESTING"] = True
@@ -27,7 +35,7 @@ def client():
     ), patch(
         "local_deep_research.web.api.get_user_db_session", side_effect=_fake_db
     ), patch(
-        "local_deep_research.web.routes.openai_compat_routes.get_current_username",
+        "local_deep_research.web.routes.openai_compat_routes.get_openai_compat_username",
         return_value="testuser",
     ), patch(
         "local_deep_research.web.routes.openai_compat_routes._load_user_context_into_params",
@@ -178,3 +186,24 @@ def test_chat_completions_scrubs_error_summary(client):
     content = resp.get_json()["choices"][0]["message"]["content"]
     assert "sk-SECRETKEY1234567890AB" not in content
     assert content.startswith("Error:")
+
+
+def test_chat_completions_open_mode_without_session(app):
+    """Open mode: no Flask session cookie — a headless call must not 401."""
+    client = app.test_client()
+    with patch(
+        "local_deep_research.web.routes.openai_compat_routes._load_user_context_into_params",
+        side_effect=lambda p, u, **kw: p.update(username=u, settings_snapshot={}) or None,
+    ), patch(
+        "local_deep_research.chat.service.ChatService"
+    ) as mock_svc, patch(
+        "local_deep_research.api.research_functions.quick_summary",
+        return_value={"summary": "ok"},
+    ):
+        mock_svc.return_value.get_or_create_session_collection.return_value = "col-abc"
+        resp = client.post(
+            "/v1/chat/completions",
+            json={"model": "ldr", "chat_id": "chat-1",
+                  "messages": [{"role": "user", "content": "hi"}]},
+        )
+    assert resp.status_code == 200

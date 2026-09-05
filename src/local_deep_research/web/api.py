@@ -38,6 +38,17 @@ from ..security.rate_limiter import (
 _ERROR_BOUNDARY_MAX_LEN = 500
 
 
+def get_openai_compat_username() -> str:
+    """Service username for headless open-webui calls (open mode).
+
+    open-webui is server-to-server and has no Flask session. In open mode
+    these endpoints run under a fixed service user whose settings are empty
+    (permissive defaults) unless the operator provisions that user. The
+    safety boundary is that the LDR server only binds 127.0.0.1.
+    """
+    return os.environ.get("LDR_OPENAI_COMPAT_USERNAME", "openwebui")
+
+
 def _scrub_error_fields(results: Dict[str, Any]) -> None:
     """In-place defense-in-depth scrub for exception-derived fields about
     to leave via jsonify (CWE-209, CodeQL #8019).

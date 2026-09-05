@@ -2118,7 +2118,6 @@ def upload_to_collection(collection_id):
 
 
 @rag_bp.route("/api/collections/chat/upload", methods=["POST"])
-@login_required
 @upload_rate_limit_user
 @upload_rate_limit_ip
 def chat_upload():
@@ -2135,10 +2134,11 @@ def chat_upload():
 
     # Import here to avoid the research-stack import cycle.
     from ...chat.service import ChatService, ChatSessionNotFound
+    from ...web.api import get_openai_compat_username
 
     try:
         collection_id = ChatService(
-            session["username"]
+            get_openai_compat_username()
         ).get_or_create_session_collection(chat_id)
     except ChatSessionNotFound:
         return jsonify({"success": False, "error": "chat not found"}), 404
