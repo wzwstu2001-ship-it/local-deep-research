@@ -608,6 +608,20 @@
         "value": false,
         "visible": true
     },
+    "llm.openai_endpoint.enable_thinking": {
+        "category": null,
+        "description": "Enable thinking/reasoning mode on endpoints that support it (llama.cpp serving Qwen3 / DeepSeek-R1). Disable to skip the model's chain-of-thought so relevance filtering and other pure-extraction calls return instantly instead of burning 30-60s on reasoning tokens. Only sent to the server when set to false; leaving it enabled never sends the field, which keeps OpenAI/OpenRouter and other endpoints that reject unknown fields working unchanged.",
+        "editable": true,
+        "max_value": null,
+        "min_value": null,
+        "name": "Openai Endpoint Enable Thinking",
+        "options": null,
+        "step": null,
+        "type": "LLM",
+        "ui_element": "checkbox",
+        "value": true,
+        "visible": true
+    },
     "llm.ollama.api_key": {
         "category": null,
         "description": "Optional API key for Ollama if you've put it behind a proxy that requires authentication. Leave empty for the default no-auth setup.",

@@ -144,6 +144,15 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         if kwargs.get("stream_usage") is not None:
             llm_params["stream_usage"] = kwargs["stream_usage"]
 
+        # Pass through any extra request-body fields collected by the concrete
+        # provider (e.g. ``enable_thinking`` for llama.cpp serving Qwen3 /
+        # DeepSeek-R1). ``extra_body`` is a ChatOpenAI constructor kwarg that
+        # the OpenAI client merges into the top-level request JSON, so servers
+        # that don't recognize a field simply ignore it while llama.cpp honors
+        # it.
+        if kwargs.get("extra_body"):
+            llm_params["extra_body"] = kwargs["extra_body"]
+
         logger.info(
             f"Creating {cls.provider_name} LLM with model: {model_name}, "
             f"temperature: {temperature}, endpoint: {base_url}"
@@ -214,6 +223,9 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                 llm_params["max_tokens"] = max_tokens
         except NoSettingsContextError:
             pass
+
+        if kwargs.get("extra_body"):
+            llm_params["extra_body"] = kwargs["extra_body"]
 
         return ChatOpenAI(**llm_params)
 

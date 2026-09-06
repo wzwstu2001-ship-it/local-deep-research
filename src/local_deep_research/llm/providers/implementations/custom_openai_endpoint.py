@@ -124,4 +124,27 @@ class CustomOpenAIEndpointProvider(OpenAICompatibleProvider):
         if stream_usage:
             kwargs["stream_usage"] = True
 
+        # Suppress reasoning/thinking tokens on endpoints that honor the flag
+        # (llama.cpp serving Qwen3 / DeepSeek-R1). Only send the field when
+        # the user explicitly disables thinking: the default (True) matches
+        # every endpoint's out-of-the-box behavior, and sending the field to
+        # servers that don't recognize it (OpenAI, OpenRouter, …) would 400
+        # the request. llama.cpp surfaces Qwen3's ``enable_thinking`` flag
+        # through ``chat_template_kwargs`` (the same shape vLLM uses), not as a
+        # top-level field — mirroring LightRAG's ``OPENAI_LLM_EXTRA_BODY`` — so
+        # it maps onto the Qwen3 template's ``/no_think`` path and skips the
+        # 30–60s of CoT that relevance filtering and other pure-extraction
+        # steps don't need.
+        enable_thinking = get_setting_from_snapshot(
+            "llm.openai_endpoint.enable_thinking",
+            True,
+            settings_snapshot=settings_snapshot,
+        )
+        if enable_thinking is False:
+            extra_body = dict(kwargs.get("extra_body") or {})
+            template_kwargs = dict(extra_body.get("chat_template_kwargs") or {})
+            template_kwargs["enable_thinking"] = False
+            extra_body["chat_template_kwargs"] = template_kwargs
+            kwargs["extra_body"] = extra_body
+
         return super().create_llm(model_name, temperature, **kwargs)

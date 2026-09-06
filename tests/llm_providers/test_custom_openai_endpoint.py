@@ -258,6 +258,42 @@ class TestCustomOpenAIEndpointCreateLLM:
         )
         assert "stream_usage" not in call_kwargs
 
+    def test_create_llm_enable_thinking_false_sends_extra_body(self):
+        """enable_thinking=False → `extra_body={"chat_template_kwargs":
+        {"enable_thinking": False}}` so llama.cpp skips Qwen3 reasoning."""
+        call_kwargs = self._create_llm_with_settings(
+            {
+                "llm.openai_endpoint.url": "http://localhost:1234/v1",
+                "llm.openai_endpoint.api_key": "test-api-key",
+                "llm.openai_endpoint.enable_thinking": False,
+            }
+        )
+        assert call_kwargs["extra_body"] == {
+            "chat_template_kwargs": {"enable_thinking": False}
+        }
+
+    def test_create_llm_enable_thinking_true_omits_extra_body(self):
+        """enable_thinking=True never sends the field — OpenAI/OpenRouter and
+        other endpoints reject unknown request fields with a 400."""
+        call_kwargs = self._create_llm_with_settings(
+            {
+                "llm.openai_endpoint.url": "http://localhost:1234/v1",
+                "llm.openai_endpoint.api_key": "test-api-key",
+                "llm.openai_endpoint.enable_thinking": True,
+            }
+        )
+        assert "extra_body" not in call_kwargs
+
+    def test_create_llm_enable_thinking_absent_omits_extra_body(self):
+        """Setting absent → default True → field not sent (back-compat)."""
+        call_kwargs = self._create_llm_with_settings(
+            {
+                "llm.openai_endpoint.url": "http://localhost:1234/v1",
+                "llm.openai_endpoint.api_key": "test-api-key",
+            }
+        )
+        assert "extra_body" not in call_kwargs
+
 
 class TestCustomOpenAIEndpointAPISignature:
     """Tests for API method signatures.
