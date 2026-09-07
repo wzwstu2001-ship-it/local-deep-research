@@ -1806,6 +1806,27 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
                 "agent will see the unmodified prompt"
             )
 
+        # open-webui session runs promote the chat's collection to the primary
+        # (web_search), leaving general public search reachable only through the
+        # specialized search_searxng tool. The generic strategy wording above
+        # ("otherwise use web_search for public information") then misleads the
+        # agent into treating web_search as the public source and skipping the
+        # web. Add an explicit mixed-retrieval directive so questions answered
+        # from local documents still pull public web sources when they'd
+        # strengthen the answer.
+        mixed_retrieval_addendum = ""
+        if (self._search_engine_name or "").startswith("collection_"):
+            mixed_retrieval_addendum = (
+                "\nIMPORTANT — this chat has uploaded documents AND public "
+                "web search available. For any substantive question, you MUST "
+                "search BOTH: (1) web_search (this chat's uploaded documents) "
+                "and search_lightrag (the shared knowledge base) for local "
+                "answers, and (2) search_searxng for public/current web "
+                "information. Do NOT answer from your own knowledge alone when "
+                "these sources may be relevant — ground your answer in the "
+                "retrieved sources and cite them as [1], [2], etc.\n"
+            )
+
         system_prompt = (
             f"You are a helpful research assistant. Today's date: {current_date}.\n"
             "Answer directly from your own knowledge when the question is a "
@@ -1833,7 +1854,7 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
             "(search_arxiv for science, search_pubmed for medical, etc.).\n"
             "5. When you have enough information, provide a comprehensive answer "
             "citing sources as [1], [2], etc.\n"
-            f"{policy_addendum}"
+            f"{policy_addendum}{mixed_retrieval_addendum}"
         )
 
         # Create agent — may fail if model doesn't support tool calling.

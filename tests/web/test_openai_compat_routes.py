@@ -255,3 +255,69 @@ def test_list_models_returns_ldr(app):
     body = resp.get_json()
     assert body["object"] == "list"
     assert [m["id"] for m in body["data"]] == ["ldr"]
+
+
+def test_chat_completions_stream_returns_sse_with_citations(client):
+    """stream=true returns SSE whose delta.annotations carry url_citations.
+
+    open-webui's streaming path extracts ``url_citation`` from
+    ``delta.annotations``, so the merged sources (FAISS + LightRAG + searxng)
+    render as citation cards. This pins that LDR no longer drops ``sources``.
+    """
+    with patch(
+        "local_deep_research.api.research_functions.quick_summary",
+        return_value={
+            "summary": "回答正文",
+            "sources": [
+                {"title": "设备操作规程.pdf", "url": "/library/document/1"},
+                {"title": "外部网页", "link": "https://example.com"},
+            ],
+        },
+    ), patch(
+        "local_deep_research.chat.service.ChatService"
+    ) as mock_chat_svc:
+        mock_chat_svc.return_value.get_or_create_session_collection.return_value = "col-abc"
+        mock_chat_svc.return_value.session_collection_has_index.return_value = False
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "ldr",
+                "chat_id": "chat-1",
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+    assert resp.status_code == 200
+    assert "text/event-stream" in resp.content_type
+    body = resp.get_data(as_text=True)
+    assert "data: [DONE]" in body
+    assert '"url_citation"' in body
+    assert "/library/document/1" in body
+    assert "https://example.com" in body
+
+
+def test_chat_completions_stream_with_empty_sources(client):
+    """Empty sources still yield a well-formed SSE stream with no annotations."""
+    with patch(
+        "local_deep_research.api.research_functions.quick_summary",
+        return_value={"summary": "无引用回答", "sources": []},
+    ), patch(
+        "local_deep_research.chat.service.ChatService"
+    ) as mock_chat_svc:
+        mock_chat_svc.return_value.get_or_create_session_collection.return_value = "col-abc"
+        mock_chat_svc.return_value.session_collection_has_index.return_value = False
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "ldr",
+                "chat_id": "chat-1",
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "data: [DONE]" in body
+    assert '"url_citation"' not in body

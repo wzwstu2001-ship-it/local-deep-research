@@ -8,7 +8,7 @@ research/retrieval path) and returns an OpenAI ``chat.completion`` body.
 
 from __future__ import annotations
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, Response, jsonify, request
 from loguru import logger
 
 from ...security.decorators import require_json_body
@@ -18,7 +18,13 @@ from ..api import (
     _scrub_error_fields,
     get_openai_compat_username,
 )
-from ..openai_compat import chat_completion_response, last_user_message
+from ..openai_compat import (
+    chat_completion_response,
+    chat_completion_stream,
+    deduplicate_sources_and_remap,
+    last_user_message,
+    sources_to_url_citations,
+)
 
 openai_compat_bp = Blueprint("openai_compat", __name__, url_prefix="/v1")
 
@@ -131,7 +137,18 @@ def chat_completions():
 
         result = quick_summary(query, search_strategy="langgraph-agent", **params)
         _scrub_error_fields(result)
-        return jsonify(chat_completion_response(result.get("summary", ""), model))
+
+        summary = result.get("summary", "")
+        sources = result.get("sources", [])
+        summary, sources = deduplicate_sources_and_remap(summary, sources)
+        citations = sources_to_url_citations(sources)
+
+        if data.get("stream"):
+            return Response(
+                chat_completion_stream(summary, model, citations),
+                mimetype="text/event-stream",
+            )
+        return jsonify(chat_completion_response(summary, model))
     except TimeoutError:
         logger.exception("OpenAI-compat chat request timed out")
         return jsonify({"error": {"message": "request timed out"}}), 504
