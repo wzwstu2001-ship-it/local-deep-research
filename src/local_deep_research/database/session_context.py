@@ -4,6 +4,7 @@ Ensures all database access has proper encryption context.
 """
 
 import functools
+import os
 from contextlib import contextmanager
 from typing import Callable, Optional
 
@@ -133,6 +134,52 @@ def get_g_db_session() -> Optional[Session]:
         return None
 
 
+def _get_openai_compat_password(username: str) -> Optional[str]:
+    """Return the provisioned password for the headless open-webui service user.
+
+    Open mode (Phase 4): open-webui calls LDR server-to-server with no Flask
+    session, so the fixed service user has no session-backed password. Its
+    encrypted DB password is provisioned via ``LDR_OPENAI_COMPAT_PASSWORD``.
+
+    Only ever returned for the configured service username
+    (``LDR_OPENAI_COMPAT_USERNAME``) — never for a regular user, whose
+    password must come from their own session. Returns ``None`` otherwise.
+    """
+    service_user = os.environ.get("LDR_OPENAI_COMPAT_USERNAME", "openwebui")
+    if username != service_user:
+        return None
+    password = os.environ.get("LDR_OPENAI_COMPAT_PASSWORD")
+    if password:
+        logger.debug(f"Using env password for service user {username}")
+        return password
+    return None
+
+
+def _provision_service_user_database(
+    username: str, password: Optional[str]
+) -> Optional[Session]:
+    """Create the headless service user's encrypted DB on first use (open mode).
+
+    The service user's DB is provisioned lazily: the first open-webui request
+    opens it and creates it with the ``LDR_OPENAI_COMPAT_PASSWORD`` key when it
+    does not exist yet. ``create_user_database`` raises ``ValueError`` for an
+    existing path, which is swallowed here so a pre-existing DB that failed to
+    open (e.g. a wrong env password) is not silently recreated — the follow-up
+    open is the source of truth. Any other creation error propagates.
+    """
+    if not password:
+        return None
+    try:
+        db_manager.create_user_database(username, password)
+    except ValueError:
+        # Already exists (a concurrent request won, or the open above failed
+        # for another reason). Fall through to a fresh open.
+        logger.debug(f"Service user DB already exists for {username}")
+    from .thread_local_session import get_metrics_session
+
+    return get_metrics_session(username, password)
+
+
 @contextmanager
 def get_user_db_session(
     username: Optional[str] = None, password: Optional[str] = None
@@ -211,6 +258,11 @@ def get_user_db_session(
                         f"Got password from thread context for {username}"
                     )
 
+            # Service-user env password (open mode server-to-server, no Flask
+            # session). Only ever applies to LDR_OPENAI_COMPAT_USERNAME.
+            if not password:
+                password = _get_openai_compat_password(username)
+
             if not password and db_manager.has_encryption:
                 raise DatabaseSessionError(
                     f"Encrypted database for {username} requires password"
@@ -224,6 +276,9 @@ def get_user_db_session(
 
             # Use thread-local session (will reuse existing or create new)
             session = get_metrics_session(username, password)
+            if not session and _get_openai_compat_password(username):
+                # Lazy-provision the headless service user's DB on first use.
+                session = _provision_service_user_database(username, password)
             if not session:
                 raise DatabaseSessionError(
                     f"Could not establish session for {username}"

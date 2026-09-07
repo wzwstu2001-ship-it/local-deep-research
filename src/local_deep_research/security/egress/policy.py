@@ -1634,6 +1634,12 @@ def context_from_snapshot(
     # The resolved scope is what the EgressContext stores and what
     # every downstream PEP enforces. Classification reuses classify_engine
     # via a throwaway BOTH-scoped context (its DNS cache is discarded).
+    # Track whether the concrete scope below was ADAPTIVE-resolved (vs an
+    # explicit user selection). The session-collection promotion must only
+    # widen an ADAPTIVE-derived single-sided scope — an explicit private_only
+    # is the user's own guarantee that data stays on-box, so it must never
+    # widen to a cloud-capable scope.
+    adaptive_resolved = scope == EgressScope.ADAPTIVE
     if scope == EgressScope.ADAPTIVE:
         scope = _resolve_adaptive_scope(
             primary_engine,
@@ -1642,6 +1648,38 @@ def context_from_snapshot(
             local_hostnames=local_hostnames,
             allow_dns=allow_dns,
         )
+
+    # open-webui session runs (chat_id -> _session_collection_id) need MIXED
+    # retrieval: the chat's uploaded documents live in a local
+    # collection/lightrag, but general questions still route to the public
+    # web-search primary (searxng). ADAPTIVE resolves that public primary to
+    # PUBLIC_ONLY, which strips the local collection/lightrag tools. The
+    # strategy's tool-list filter and the factory PEP BOTH build their context
+    # through THIS function, so promoting here keeps the two layers agreeing —
+    # promoting only on the strategy side (a local EgressContext replace) left
+    # the factory hard-denying the collection mid-run with
+    # scope_mismatch_public_only. The marker is set only by
+    # openai_compat_routes and absent from every other run type, so this cannot
+    # widen scope elsewhere. Only an ADAPTIVE-resolved single-sided scope is
+    # promoted — PUBLIC_ONLY for a public primary (searxng), PRIVATE_ONLY for
+    # a collection primary (search.tool = collection_<id>). An explicit
+    # PRIVATE_ONLY/STRICT selection is the user's own and stays untouched.
+    if (
+        scope == EgressScope.PUBLIC_ONLY
+        and settings_snapshot.get("_session_collection_id")
+    ):
+        scope = EgressScope.BOTH
+    elif (
+        scope == EgressScope.PRIVATE_ONLY
+        and adaptive_resolved
+        and settings_snapshot.get("_session_collection_id")
+    ):
+        # Symmetric case: the session promoted the chat's collection to the
+        # primary (search.tool = collection_<id>), so ADAPTIVE resolved
+        # PRIVATE_ONLY. The session still needs public engines for general
+        # questions, so widen to BOTH exactly as the public-primary case does.
+        # `adaptive_resolved` keeps an explicit private_only selection intact.
+        scope = EgressScope.BOTH
 
     # PRIVATE_ONLY means "my data stays on this box." That guarantee only
     # holds if BOTH inference paths are local — a cloud LLM receives the

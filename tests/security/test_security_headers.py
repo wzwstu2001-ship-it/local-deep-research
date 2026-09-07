@@ -485,6 +485,14 @@ class TestIsApiRoute:
 
         assert SecurityHeaders._is_api_route("/research/api/status") is True
 
+    def test_library_api_detected(self):
+        """Should detect /library/api/ paths as API routes (chat upload)."""
+        from local_deep_research.security.security_headers import (
+            SecurityHeaders,
+        )
+
+        assert SecurityHeaders._is_api_route("/library/api/collections/chat/upload") is True
+
     def test_non_api_not_detected(self):
         """Should not detect regular paths as API routes."""
         from local_deep_research.security.security_headers import (

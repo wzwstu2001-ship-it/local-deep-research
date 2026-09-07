@@ -1472,9 +1472,26 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
             username = username_from_snapshot(
                 self.settings_snapshot
             ) or getattr(self, "_username", None)
-            return context_from_snapshot(
+            ctx = context_from_snapshot(
                 self.settings_snapshot, primary, username=username
             )
+            # open-webui session runs (chat_id -> _session_collection_id) need
+            # MIXED retrieval: the chat's own uploaded documents live in a
+            # local collection/lightrag, but general questions still route to
+            # web_search. The default ADAPTIVE scope resolves to PUBLIC_ONLY
+            # when the primary is a public engine (searxng), which strips the
+            # local collection/lightrag tools and makes uploaded files
+            # unsearchable. The promotion to BOTH now lives in
+            # context_from_snapshot (single source of truth) so this context
+            # and the factory PEP's context agree; promoting only here left
+            # the factory hard-denying the collection mid-run
+            # (scope_mismatch_public_only).
+            logger.info(
+                "egress ctx: _session_collection_id={!r}, scope={}",
+                self.settings_snapshot.get("_session_collection_id"),
+                ctx.scope.value,
+            )
+            return ctx
         except PolicyDeniedError:
             # Corrupted/invalid policy.egress_scope — re-raise so the
             # caller fails closed instead of silently running unfiltered.
@@ -1691,6 +1708,10 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
                 )
             )
 
+        logger.info(
+            "LangGraph agent tool list: {}",
+            [getattr(t, "name", type(t).__name__) for t in tools],
+        )
         return tools
 
     # -- Main entry point ---------------------------------------------------
@@ -1786,14 +1807,22 @@ class LangGraphAgentStrategy(BaseSearchStrategy):
             )
 
         system_prompt = (
-            f"You are a research assistant writing a research report. Today's date: {current_date}.\n"
-            "This is NOT a chat conversation. Your only job is to research the "
-            "given topic and produce a comprehensive, well-cited report.\n"
-            "Do NOT ask clarifying questions, do NOT ask the user anything, "
-            "do NOT offer to help further — just research and report.\n"
-            "You MUST search the selected source before answering — never answer from memory alone.\n\n"
+            f"You are a helpful research assistant. Today's date: {current_date}.\n"
+            "Answer directly from your own knowledge when the question is a "
+            "greeting, about yourself, conversational, or needs no up-to-date or "
+            "source-backed facts — in those cases do NOT call any search tool, "
+            "just answer directly.\n"
+            "Use the available tools when the question needs factual, current, "
+            "or source-backed information, or when the user asks you to research "
+            "or look something up.\n\n"
             "Strategy:\n"
-            "1. Start with web_search — it queries your selected primary source — for initial exploration.\n"
+            "1. Decide where the answer lives first. If the question concerns "
+            "documents the user uploaded, their own files, or internal knowledge, "
+            "search the LOCAL document tools FIRST — any tool named "
+            "search_collection_* (this chat's uploaded documents) or "
+            "search_lightrag (the shared knowledge base). Otherwise use "
+            "web_search (your selected primary source) for general, current, or "
+            "public information.\n"
             "2. For complex multi-faceted questions, use research_subtopic to "
             f"investigate specific aspects in parallel (pass 2-{MAX_SUBTOPICS} "
             f"focused, non-overlapping questions. Batches of "

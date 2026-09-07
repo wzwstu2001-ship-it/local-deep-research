@@ -235,6 +235,7 @@ class SecurityHeaders:
             path.startswith("/api/")
             or path.startswith("/research/api/")
             or path.startswith("/history/api")
+            or path.startswith("/library/api/")
         )
 
     def _validate_cors_config(self) -> None:

@@ -136,6 +136,44 @@ def test_chat_completions_injects_session_collection_scope(client):
         return_value={"summary": "scoped answer"},
     ) as mock_qs:
         mock_chat_svc.return_value.get_or_create_session_collection.return_value = "col-abc"
+        mock_chat_svc.return_value.session_collection_has_index.return_value = False
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "ldr",
+                "chat_id": "chat-1",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+    assert resp.status_code == 200
+    _args, kwargs = mock_qs.call_args
+    snapshot = kwargs["settings_snapshot"]
+    assert snapshot["_session_collection_id"] == "col-abc"
+    # An UNINDEXED collection must NOT become the primary: that would replace
+    # the agent's web search and yield "No sources" for an empty collection.
+    assert "search.tool" not in snapshot
+
+
+def test_chat_completions_promotes_indexed_collection_to_primary(client):
+    """An indexed session collection becomes the run's primary (search.tool),
+    so the agent's web_search retrieves the uploads instead of relying on the
+    LLM to pick a UUID-named collection tool."""
+    def _load(params, username, allow_default_settings=False):
+        params["username"] = username
+        params["settings_snapshot"] = {"_username": username}
+
+    with patch(
+        "local_deep_research.web.routes.openai_compat_routes._load_user_context_into_params",
+        side_effect=_load,
+    ), patch(
+        "local_deep_research.chat.service.ChatService"
+    ) as mock_chat_svc, patch(
+        "local_deep_research.api.research_functions.quick_summary",
+        return_value={"summary": "scoped answer"},
+    ) as mock_qs:
+        mock_chat_svc.return_value.get_or_create_session_collection.return_value = "col-abc"
+        mock_chat_svc.return_value.session_collection_has_index.return_value = True
         resp = client.post(
             "/v1/chat/completions",
             json={
@@ -207,3 +245,13 @@ def test_chat_completions_open_mode_without_session(app):
                   "messages": [{"role": "user", "content": "hi"}]},
         )
     assert resp.status_code == 200
+
+
+def test_list_models_returns_ldr(app):
+    """GET /v1/models exposes the single 'ldr' model for open-webui's picker."""
+    client = app.test_client()
+    resp = client.get("/v1/models")
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["object"] == "list"
+    assert [m["id"] for m in body["data"]] == ["ldr"]

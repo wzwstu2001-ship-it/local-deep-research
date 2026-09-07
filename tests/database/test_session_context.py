@@ -141,6 +141,107 @@ class TestGetUserDbSession:
                             with get_user_db_session():
                                 pass
 
+    def test_uses_env_password_for_service_user(self, app):
+        """Service user with no Flask session resolves its password from
+        LDR_OPENAI_COMPAT_PASSWORD (open mode)."""
+        from local_deep_research.database.session_context import (
+            get_user_db_session,
+        )
+
+        with app.test_request_context():
+            from flask import session as flask_session
+
+            flask_session["username"] = "openwebui"
+
+            with patch(
+                "local_deep_research.database.session_context.db_manager"
+            ) as mock_db:
+                mock_db.has_encryption = True
+
+                with patch(
+                    "local_deep_research.database.session_context.get_search_context"
+                ) as mock_ctx:
+                    mock_ctx.return_value = None
+
+                    with patch(
+                        "local_deep_research.database.session_passwords.session_password_store"
+                    ) as mock_store:
+                        mock_store.get_session_password.return_value = None
+
+                        with patch(
+                            "local_deep_research.database.thread_local_session.get_metrics_session"
+                        ) as mock_get_session:
+                            mock_session = Mock()
+                            mock_get_session.return_value = mock_session
+
+                            with patch.dict(
+                                "os.environ",
+                                {
+                                    "LDR_OPENAI_COMPAT_USERNAME": "openwebui",
+                                    "LDR_OPENAI_COMPAT_PASSWORD": "svc-secret",
+                                },
+                            ):
+                                with get_user_db_session() as session:
+                                    assert session is mock_session
+
+                            mock_get_session.assert_called_once_with(
+                                "openwebui", "svc-secret"
+                            )
+
+    def test_provisions_service_user_db_on_first_use(self, app):
+        """Service user whose DB does not exist yet is provisioned lazily with
+        the env password (open mode)."""
+        from local_deep_research.database.session_context import (
+            get_user_db_session,
+        )
+
+        with app.test_request_context():
+            from flask import session as flask_session
+
+            flask_session["username"] = "openwebui"
+
+            with patch(
+                "local_deep_research.database.session_context.db_manager"
+            ) as mock_db:
+                mock_db.has_encryption = True
+
+                with patch(
+                    "local_deep_research.database.session_context.get_search_context"
+                ) as mock_ctx:
+                    mock_ctx.return_value = None
+
+                    with patch(
+                        "local_deep_research.database.session_passwords.session_password_store"
+                    ) as mock_store:
+                        mock_store.get_session_password.return_value = None
+
+                        with patch(
+                            "local_deep_research.database.thread_local_session.get_metrics_session"
+                        ) as mock_get_session:
+                            # First open returns None (no DB), then provision,
+                            # then reopen succeeds.
+                            provisioned_session = Mock()
+                            mock_get_session.side_effect = [
+                                None,
+                                provisioned_session,
+                            ]
+
+                            with patch.dict(
+                                "os.environ",
+                                {
+                                    "LDR_OPENAI_COMPAT_USERNAME": "openwebui",
+                                    "LDR_OPENAI_COMPAT_PASSWORD": "svc-secret",
+                                },
+                            ):
+                                with get_user_db_session() as session:
+                                    assert session is provisioned_session
+
+                            mock_db.create_user_database.assert_called_once_with(
+                                "openwebui", "svc-secret"
+                            )
+                            # Open, then reopen after provisioning.
+                            assert mock_get_session.call_count == 2
+
 
 class TestWithUserDatabase:
     """Tests for with_user_database decorator."""

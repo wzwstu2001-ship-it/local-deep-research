@@ -23,6 +23,29 @@ from ..openai_compat import chat_completion_response, last_user_message
 openai_compat_bp = Blueprint("openai_compat", __name__, url_prefix="/v1")
 
 
+@openai_compat_bp.route("/models", methods=["GET"])
+def list_models():
+    """OpenAI-compatible model list so open-webui can enumerate LDR as a backend.
+
+    open-webui fetches ``GET /v1/models`` when adding/refreshing an OpenAI
+    connection. Without it the model picker shows "no models", so expose the
+    single logical model ``ldr`` (the id ``chat_completions`` accepts).
+    """
+    return jsonify(
+        {
+            "object": "list",
+            "data": [
+                {
+                    "id": "ldr",
+                    "object": "model",
+                    "created": 0,
+                    "owned_by": "local-deep-research",
+                }
+            ],
+        }
+    )
+
+
 @openai_compat_bp.route("/chat/completions", methods=["POST"])
 @api_rate_limit
 @require_json_body(error_message="messages are required")
@@ -62,7 +85,12 @@ def chat_completions():
 
         username = get_openai_compat_username()
         params = {"temperature": data.get("temperature", 0.7)}
-        error = _load_user_context_into_params(params, username)
+        # Open mode: the fixed service user has no Flask session/password, so
+        # its encrypted settings DB can't be opened server-to-server. Fall back
+        # to permissive defaults instead of failing closed (LDR binds 127.0.0.1).
+        error = _load_user_context_into_params(
+            params, username, allow_default_settings=True
+        )
         if error is not None:
             return error
 
@@ -88,9 +116,20 @@ def chat_completions():
             settings_snapshot = {}
             params["settings_snapshot"] = settings_snapshot
         settings_snapshot["_session_collection_id"] = collection_id
-        settings_snapshot["search.tool"] = f"collection_{collection_id}"
+        # Session isolation is enforced by _session_collection_id alone: the
+        # library engine filters by it and the agent hides every OTHER
+        # collection tool. When the chat's collection already has an index
+        # (uploaded documents were embedded), promote it to the run's primary
+        # search engine so the agent's web_search tool retrieves the uploads
+        # instead of relying on the LLM to pick a UUID-named collection tool.
+        # The egress policy keeps public engines (searxng) alongside this
+        # private primary for session runs (context_from_snapshot promotion),
+        # so mixed retrieval still works. An empty collection is left as-is so
+        # general questions fall back to searxng rather than "No sources".
+        if ChatService(username).session_collection_has_index(collection_id):
+            settings_snapshot["search.tool"] = f"collection_{collection_id}"
 
-        result = quick_summary(query, **params)
+        result = quick_summary(query, search_strategy="langgraph-agent", **params)
         _scrub_error_fields(result)
         return jsonify(chat_completion_response(result.get("summary", ""), model))
     except TimeoutError:

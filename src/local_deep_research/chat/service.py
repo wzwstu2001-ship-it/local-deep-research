@@ -498,9 +498,12 @@ class ChatService:
         upload/query through a chat lazily creates the collection and stamps
         ``ChatSession.collection_id``; later calls reuse it.
 
+        Open mode (Phase 4): open-webui forwards its conversation id as
+        ``session_id`` with no prior LDR-side ``ChatSession`` row, so an
+        unknown id creates a ChatSession on the spot and still gets its own
+        isolated collection — never a whole-library fallback.
+
         Raises:
-            ChatSessionNotFound: if no row matches ``session_id`` (route layer
-                maps to 404 / openai_compat maps to 400).
             ChatRepositoryError: if the underlying DB query fails (route layer
                 maps to 500).
         """
@@ -508,7 +511,26 @@ class ChatService:
             with get_user_db_session(self.username) as db:
                 chat = db.query(ChatSession).filter_by(id=session_id).first()
                 if chat is None:
-                    raise ChatSessionNotFound(session_id)  # noqa: TRY301 — re-raised by outer except
+                    # Open mode: an unknown chat_id (open-webui conversation id)
+                    # has no LDR ChatSession yet. Create one so the chat gets
+                    # its own isolated collection rather than failing closed.
+                    chat = ChatSession(
+                        id=session_id,
+                        title=self._fallback_title(None),
+                        status=ChatSessionStatus.ACTIVE.value,
+                        accumulated_context={
+                            "key_entities": [],
+                            "topics": [],
+                            "summary": "",
+                        },
+                        message_count=0,
+                    )
+                    db.add(chat)
+                    db.flush()
+                    logger.info(
+                        f"Created chat session {session_id[:8]}... for user "
+                        f"{self.username} (openai_compat auto-create)"
+                    )
 
                 if chat.collection_id:
                     return chat.collection_id
@@ -530,14 +552,50 @@ class ChatService:
                     f"{session_id[:8]}... (user {self.username})"
                 )
                 return collection.id
-        except ChatSessionNotFound:
-            # Propagate as-is; this is the genuine 404 signal.
-            raise
         except DB_EXCEPTIONS as exc:
             logger.exception("Error resolving chat session collection")
             raise ChatRepositoryError(
                 f"DB error resolving collection for session {session_id[:8]}..."
             ) from exc
+
+    def session_collection_has_index(self, collection_id: str) -> bool:
+        """Return True if the session collection has a current FAISS index
+        with at least one embedded chunk.
+
+        The OpenAI-compat route uses this to decide whether to promote the
+        chat's collection to the run's primary search engine (``search.tool``).
+        An indexed collection means the uploaded documents are locally
+        searchable; an empty one must NOT become primary or general questions
+        yield "No sources" even when searxng could answer them.
+
+        Fail-safe: any DB error returns False, keeping the public primary.
+        """
+        from sqlalchemy import func
+
+        from ..database.models.library import RAGIndex, RagDocumentStatus
+
+        try:
+            with get_user_db_session(self.username) as db:
+                rag_index = (
+                    db.query(RAGIndex)
+                    .filter_by(
+                        collection_name=f"collection_{collection_id}",
+                        is_current=True,
+                    )
+                    .first()
+                )
+                if rag_index is None:
+                    return False
+                chunk_count = (
+                    db.query(func.sum(RagDocumentStatus.chunk_count))
+                    .filter_by(collection_id=collection_id)
+                    .scalar()
+                    or 0
+                )
+                return chunk_count > 0
+        except DB_EXCEPTIONS as exc:
+            logger.exception("Error checking session collection index")
+            return False
 
     def get_session_messages(
         self,

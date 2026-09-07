@@ -1719,7 +1719,18 @@ def update_collection(collection_id):
 @upload_rate_limit_user
 @upload_rate_limit_ip
 def upload_to_collection(collection_id):
-    """Upload files to a collection."""
+    """Upload files to a collection (browser-session path)."""
+    return _upload_to_collection_impl(collection_id, session["username"])
+
+
+def _upload_to_collection_impl(collection_id, username):
+    """Upload files to a collection (shared core, no auth of its own).
+
+    Both callers establish authentication before reaching here:
+    - upload_to_collection: @login_required -> session["username"]
+    - chat_upload: open-webui open mode -> get_openai_compat_username()
+      (chat_id ownership resolved via get_or_create_session_collection)
+    """
     from ...database.session_context import (
         get_user_db_session,
         safe_rollback,
@@ -1751,7 +1762,6 @@ def upload_to_collection(collection_id):
         if not is_valid:
             return jsonify({"success": False, "error": error_msg}), 400
 
-        username = session["username"]
         with get_user_db_session(username) as db_session:
             # Verify collection exists in this user's database
             collection = (
@@ -2089,11 +2099,23 @@ def upload_to_collection(collection_id):
                 if f.get("status") in ("uploaded", "added_to_collection")
             ]
             if document_ids:
-                from ...database.session_passwords import session_password_store
+                from ...database.session_passwords import (
+                    capture_request_db_password,
+                )
 
-                session_id = session.get("session_id")
-                db_password = session_password_store.get_session_password(
-                    username, session_id
+                # Resolve the encrypted-DB password through the request
+                # context. ``capture_request_db_password`` prefers
+                # ``g.user_password`` (set by get_user_db_session above when it
+                # opened the DB) and falls back to the Flask session store.
+                # This covers both the browser path (login session) and the
+                # open-mode path (chat_upload -> service-user env password, no
+                # Flask session), where the old ``session.get("session_id")``
+                # probe returned None and silently skipped auto-indexing.
+                db_password = capture_request_db_password(username)
+                logger.info(
+                    "auto-index trigger check: document_ids={!r}, db_password={}",
+                    document_ids,
+                    "SET" if db_password else "None",
                 )
                 if db_password:
                     trigger_auto_index(
@@ -2143,7 +2165,9 @@ def chat_upload():
     except ChatSessionNotFound:
         return jsonify({"success": False, "error": "chat not found"}), 404
 
-    return upload_to_collection(collection_id)
+    return _upload_to_collection_impl(
+        collection_id, get_openai_compat_username()
+    )
 
 
 @rag_bp.route(

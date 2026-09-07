@@ -716,8 +716,7 @@ class TestUploadToCollection:
 
         db_session.query = Mock(side_effect=query_side_effect)
 
-        mock_password_store = Mock()
-        mock_password_store.get_session_password.return_value = "secret-db-pass"
+        mock_capture = Mock(return_value="secret-db-pass")
 
         mock_trigger = Mock()
 
@@ -736,7 +735,7 @@ class TestUploadToCollection:
                     f"{_TEXT_PROC}.remove_surrogates", side_effect=lambda x: x
                 ),
                 patch(
-                    f"{_DB_PASS}.session_password_store", mock_password_store
+                    f"{_DB_PASS}.capture_request_db_password", mock_capture
                 ),
                 patch(f"{MODULE}.trigger_auto_index", mock_trigger),
             ],
@@ -780,10 +779,7 @@ class TestUploadToCollection:
 
         db_session.query = Mock(side_effect=query_side_effect)
 
-        mock_password_store = Mock()
-        mock_password_store.get_session_password.return_value = (
-            None  # No password
-        )
+        mock_capture = Mock(return_value=None)  # No password
 
         mock_trigger = Mock()
 
@@ -802,7 +798,7 @@ class TestUploadToCollection:
                     f"{_TEXT_PROC}.remove_surrogates", side_effect=lambda x: x
                 ),
                 patch(
-                    f"{_DB_PASS}.session_password_store", mock_password_store
+                    f"{_DB_PASS}.capture_request_db_password", mock_capture
                 ),
                 patch(f"{MODULE}.trigger_auto_index", mock_trigger),
             ],

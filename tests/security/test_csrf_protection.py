@@ -240,6 +240,22 @@ class TestCSRFProtection:
         # This documents that certain endpoints don't need CSRF
         assert True
 
+    def test_chat_upload_exempt_from_csrf(self, client):
+        """chat_upload (open-webui browser upload) is exempt from CSRF.
+
+        The endpoint authenticates via the open-mode service user
+        (get_openai_compat_username), not a browser session, so the browser
+        fetch carries no CSRF token. A POST without a token must reach the
+        view and fail on the missing chat_id — NOT on a CSRF error.
+        """
+        response = client.post(
+            "/library/api/collections/chat/upload",
+            data={},
+        )
+        assert response.status_code == 400
+        body = response.get_json()
+        assert body.get("error") == "chat_id is required"
+
 
 class TestCSRFProtectionDocumentation:
     """Documentation tests for CSRF protection strategy."""

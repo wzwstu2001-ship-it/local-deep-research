@@ -1,8 +1,8 @@
 # LDR + LightRAG + open-webui 融合设计
 
-- **日期**：2026-08-28（2026-09-03 修订：检索改为 agent 自主组合、FAISS 恢复、新增会话级隔离、图谱入口改前端直连）
-- **状态**：待评审（Draft for review）
-- **作者**：Claude Code（经用户逐项确认）
+- **日期**：2026-08-28（2026-09-03 修订：检索改为 agent 自主组合、FAISS 恢复、新增会话级隔离、图谱入口改前端直连；2026-09-06 修订：agent 自由推理——寒暄/常识直接回答不检索，检索仅按需，LightRAG 仅为可选检索工具）
+- **状态**：待评审
+- **作者**：wzw
 
 ## 1. 背景与目标
 
@@ -18,7 +18,7 @@
 
 1. LDR 的向量检索**不禁用**——用户在 open-webui 上传的文档参与 LDR 的 FAISS 向量检索。
 2. LightRAG 数据库由后端人员维护、在 LightRAG 自身 UI 上传，作为**全局共享的基础文档库**，不经 LDR。
-3. LDR 检索时，由 LangGraph **agent 自主选择** 1-3 种检索方式（组合，非互斥）：网搜（`search_*`）/ 本地向量库（`search_library`，FAISS）/ LightRAG 向量+图谱检索（`search_lightrag`）。
+3. LDR 由 LangGraph **agent 自由推理**：寒暄 / 自我介绍 / 常识等无需检索的问题**直接回答**（不调用任何检索工具）；需要事实、时效或来源支撑时，agent 才**自主选择** 1-3 种检索方式（组合，非互斥）：网搜（`search_*`）/ 本地向量库（`search_library`，FAISS）/ LightRAG 向量+图谱检索（`search_lightrag`）。LightRAG 仅为可选检索方式之一，不改变 agent 原本的推理与工具调用逻辑。
 4. open-webui 前端直连 LightRAG 图 API，提供**查看知识图谱**的入口。
 5. **会话级隔离**：不同 chat 会话只能检索该会话自己上传的文档，不能检索其他会话上传的文档（LightRAG 全局基础库对所有会话共享，不受此约束）。
 6. LDR 保留文档原文（SQLCipher），用于引用溯源。
@@ -69,7 +69,7 @@ open-webui（统一前台，fork，默认端口 8080 冲突需改）
   └─ （禁用自带 Documents/RAG）
         │
 LDR（Flask，核心后端，端口 5000）
-  ├─ OpenAI 兼容 chat 接口 → LangGraph agentic 研究
+  ├─ OpenAI 兼容 chat 接口 → LangGraph agent 自由推理（直接回答 / 按需检索）
   ├─ 用户文档原文存 SQLCipher（Document.text_content）
   ├─ 用户文档 FAISS 向量索引（会话级隔离：collection_id 过滤）
   ├─ LightRAGRetriever（HTTP 适配层，检索全局基础库）
@@ -98,7 +98,7 @@ LightRAG（FastAPI，独立服务，全局基础文档库）
 | # | 决策 | 结论 | 理由 |
 |---|---|---|---|
 | D1 | 集成拓扑 | open-webui 前端 + LDR 主后端 + LightRAG 独立基础库 | 用户明确三项目分工 |
-| D2 | 检索路由方式 | **agent 自主组合 1-3 种**，非三选一、非全局开关 | 用户明确「不是三选一，由 agent 自助选择 1-3 种」；LangGraph 的 tool choice 机制天然承载，无需新增判定节点 |
+| D2 | 回答与检索方式 | **agent 自由推理**：寒暄/常识直接回答（不检索）；需检索时自主组合 1-3 种，非三选一、非全局开关 | 用户明确「LDR 不一定经过检索才能回答，可直接推理」；LangGraph 的 tool choice 机制天然承载，无需新增判定节点 |
 | D3 | FAISS 去向 | **恢复启用**，服务用户上传文档 | 用户明确「LDR 向量检索不禁用」；FAISS 代码完整可复用 |
 | D4 | LightRAG 定位 | 全局基础文档库，后端人员在 LightRAG UI 上传，不经 LDR | 用户明确「LightRAG 数据库由后端人员维护并上传作为基础文档」 |
 | D5 | 会话级隔离 | 复用 LDR 既有 `Collection` 维度：每个 chat 一个专属 collection，open-webui 透传 chat_id，LDR 建/取 collection 并按之过滤上传与检索 | 用户明确「不同会话只能检索该会话上传的文档」；collection 已是 LDR 原生文档分组维度，改动最小 |
@@ -143,15 +143,16 @@ LightRAG（FastAPI，独立服务，全局基础文档库）
 2. LightRAG 异步入 pipeline 建图 + 建向量索引。
 3. 全局所有会话经 `search_lightrag` 检索，不受会话隔离约束。
 
-### 7.3 检索（agent 自主组合）
+### 7.3 回答与检索（agent 自由推理）
 
 1. 用户在 open-webui 提问 → open-webui 将对话发到 LDR 的 OpenAI 兼容 chat 接口（透传 chat_id）。
-2. LDR 的 LangGraph agent 判断需要检索，**自主选择 1-3 个工具**：
+2. LDR 的 LangGraph agent 先判断是否需要检索：寒暄 / 自我介绍 / 常识等可直接回答的问题，直接基于自身知识回答，**不调用任何检索工具**。
+3. 需要事实 / 时效 / 来源支撑时，agent **自主选择 1-3 个工具**：
    - `search_<engine>`（网搜）→ 公开互联网；
    - `search_library`（FAISS）→ 仅当前 chat 专属 collection 内文档；
    - `search_lightrag`（LightRAG `POST /query`，`mode=mix`）→ 全局基础库。
-3. 各工具结果映射回 LDR 的 citation 格式（title/url/snippet + source）。
-4. agent 综合多路结果生成回答（可引用多个来源）。
+4. 各工具结果映射回 LDR 的 citation 格式（title/url/snippet + source）。
+5. agent 综合多路结果生成回答（可引用多个来源）。
 
 ### 7.4 图谱查看（前端直连）
 
@@ -161,7 +162,7 @@ LightRAG（FastAPI，独立服务，全局基础文档库）
 
 ### 7.5 深度研究
 
-- 不变：LDR 的 LangGraph agent 照常运行；知识库检索从单一 `search_lightrag` 扩展为「FAISS + LightRAG + 网搜」自主组合；其余 web 搜索引擎不变。open-webui 仅作为其前台。
+- LDR 的 LangGraph agent 自由推理：寒暄/常识直接回答（不检索）；需检索时照常运行，知识库检索从单一 `search_lightrag` 扩展为「FAISS + LightRAG + 网搜」自主组合；其余 web 搜索引擎不变。open-webui 仅作为其前台。
 
 ## 8. 组件与改动点
 
@@ -175,7 +176,7 @@ LightRAG（FastAPI，独立服务，全局基础文档库）
 1. **切回 FAISS**：`library_rag_service.py::LibraryRAGService` 的 `index_document` / `search` 恢复走 FAISS（`VectorIndex` / `FaissVectorStore.search`），`collection_id` 参数真正生效（当前「只保留签名未使用」）。`rag_service_factory.py::get_rag_service` 三个构造点恢复 FAISS 构造（`_build_lightrag_client` 不再恒非 None，或改为不传 lightrag_client 走 FAISS 分支）。
 2. **保留 LightRAGRetriever**：`web_search_engines/engines/lightrag_retriever.py::LightRAGRetriever` 独立保留，走 `client.query_data`，注册名 `lightrag`、`is_local=True`——与 FAISS 并存，供 agent 组合调用。
 3. **会话级隔离**：`database/models/chat.py::ChatSession` 加 `collection_id` 外键（指向 `Collection`）；上传接口依据透传的 `chat_id` 建/取专属 collection；`LibraryRAGService.search` 按 collection_id 过滤文档。
-4. **OpenAI 兼容接口透传 chat_id**：`openai_compat_routes.py` 接收 open-webui 传来的 chat_id（或 session 标识），路由到对应 chat 的 collection，保证检索只落在该会话文档上。
+4. **OpenAI 兼容接口透传 chat_id + 走自由推理 agent**：`openai_compat_routes.py` 接收 open-webui 传来的 chat_id（或 session 标识），路由到对应 chat 的 collection；聊天请求走 `search_strategy="langgraph-agent"`（自由推理，可直接回答或按需检索），而非 `source_based`（强制搜索）。
 5. **落地遗留 fix**（Phase 1 SDD final review 发现、fix agent 显示 stopped 需确认）：① `app_factory.py` CSRF 豁免 tuple 加 `"openai_compat"`；② `openai_compat_routes.py` 复用 `_scrub_error_fields` 防信息泄露。
 6. 新增 `LightRAGClient` 封装（`POST /documents/text`、`POST /query`、`GET /documents/track_status/{track_id}`）——保留，供 `LightRAGRetriever` 使用。✅ 已完成
 7. 注册 `retriever_registry.register("lightrag", ...)` ✅ 已完成；`search_library` 为 LDR 既有工具，恢复 FAISS 后自动可用。

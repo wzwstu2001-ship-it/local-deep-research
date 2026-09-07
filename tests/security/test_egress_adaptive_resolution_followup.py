@@ -757,3 +757,45 @@ def test_adaptive_allow_dns_true_uses_dns_resolution():
     # A public-resolving primary does NOT force the local-inference coupling.
     assert ctx.require_local_llm is False
     assert ctx.require_local_embeddings is False
+
+
+# ---------------------------------------------------------------------------
+# Session-collection promotion (open-webui chat_id -> _session_collection_id):
+# an ADAPTIVE-resolved PRIVATE_ONLY — a collection primary — is promoted to
+# BOTH so public engines (searxng) survive alongside the local uploads. An
+# explicit private_only selection is the user's own guarantee and must not be
+# widened. Regression for the symmetric PRIVATE_ONLY promotion added for the
+# open-webui uploaded-document retrieval path.
+# ---------------------------------------------------------------------------
+
+
+def test_session_collection_promotes_adaptive_private_primary_to_both():
+    """ADAPTIVE + a private primary + _session_collection_id resolves to BOTH,
+    not PRIVATE_ONLY, so local uploads and public web search coexist."""
+    ctx = context_from_snapshot(
+        _adaptive_snapshot("paperless", _session_collection_id="col-1"),
+        primary_engine="paperless",
+    )
+    assert ctx.scope == EgressScope.BOTH
+
+
+def test_adaptive_private_primary_without_session_stays_private_only():
+    """Without _session_collection_id, an ADAPTIVE-resolved private primary
+    keeps PRIVATE_ONLY — no session-collection promotion to widen."""
+    ctx = context_from_snapshot(
+        _adaptive_snapshot("paperless"),
+        primary_engine="paperless",
+    )
+    assert ctx.scope == EgressScope.PRIVATE_ONLY
+
+
+def test_explicit_private_only_not_promoted_by_session_collection():
+    """An explicit private_only is the user's own guarantee and stays
+    PRIVATE_ONLY even with _session_collection_id present."""
+    snap = {
+        "policy.egress_scope": {"value": "private_only"},
+        "search.tool": {"value": "paperless"},
+        "_session_collection_id": "col-1",
+    }
+    ctx = context_from_snapshot(snap, primary_engine="paperless")
+    assert ctx.scope == EgressScope.PRIVATE_ONLY

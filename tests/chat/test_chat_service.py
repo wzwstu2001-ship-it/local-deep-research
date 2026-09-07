@@ -971,7 +971,8 @@ class TestChatServiceGetOrCreateSessionCollection:
 
     Session isolation (spec §9): a chat owns exactly one Collection. The
     first call lazily creates it and stamps ChatSession.collection_id;
-    later calls reuse it. An unknown session_id fails closed.
+    later calls reuse it. An unknown session_id (open-webui conversation id)
+    auto-creates a ChatSession with its own Collection (open mode).
     """
 
     def test_creates_collection_then_reuses_it(self, mock_user_db_session):
@@ -1016,18 +1017,58 @@ class TestChatServiceGetOrCreateSessionCollection:
         assert created[0].kwargs["agent_enabled"] is True
         assert created[0].kwargs["is_public"] is False
 
-    def test_raises_for_unknown_session(self, mock_user_db_session):
-        """Unknown session_id raises ChatSessionNotFound (fail closed) —
-        never a whole-library collection."""
+    def test_creates_session_and_collection_for_unknown_id(
+        self, mock_user_db_session
+    ):
+        """Unknown session_id (open-webui conversation id) auto-creates a
+        ChatSession with its own isolated Collection — never a whole-library
+        collection (open mode, Phase 4)."""
         from local_deep_research.chat.service import (
             ChatService,
-            ChatSessionNotFound,
+            ChatSessionStatus,
         )
 
+        # No ChatSession row exists yet.
         (
             mock_user_db_session.query.return_value.filter_by.return_value.first.return_value
         ) = None
 
+        created_sessions = []
+
+        class FakeChatSession:
+            def __init__(self, **kw):
+                self.id = kw["id"]
+                self.collection_id = None
+                self.kwargs = kw
+                created_sessions.append(self)
+
+        created = []
+
+        class FakeCollection:
+            def __init__(self, **kw):
+                self.id = kw["id"]
+                self.kwargs = kw
+                created.append(self)
+
         service = ChatService(username="testuser")
-        with pytest.raises(ChatSessionNotFound):
-            service.get_or_create_session_collection("nonexistent-id")
+        with patch(
+            "local_deep_research.chat.service.ChatSession",
+            side_effect=FakeChatSession,
+        ), patch(
+            "local_deep_research.chat.service.Collection",
+            side_effect=FakeCollection,
+        ):
+            cid = service.get_or_create_session_collection("openwebui-chat-1")
+
+        # A ChatSession was created and bound to the collection.
+        assert len(created_sessions) == 1
+        assert created_sessions[0].id == "openwebui-chat-1"
+        assert (
+            created_sessions[0].kwargs["status"] == ChatSessionStatus.ACTIVE.value
+        )
+        assert created_sessions[0].kwargs["message_count"] == 0
+        assert created_sessions[0].collection_id == cid
+        # Exactly one isolated Collection was created.
+        assert len(created) == 1
+        assert created[0].kwargs["collection_type"] == "user_collection"
+        assert created[0].id == cid

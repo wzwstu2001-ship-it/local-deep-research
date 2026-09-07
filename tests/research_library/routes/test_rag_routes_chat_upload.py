@@ -33,7 +33,7 @@ def test_chat_upload_resolves_collection_and_delegates(app):
     with _auth_client(app) as (client, ctx), patch(
         "local_deep_research.chat.service.ChatService"
     ) as mock_svc, patch(
-        "local_deep_research.research_library.routes.rag_routes.upload_to_collection"
+        "local_deep_research.research_library.routes.rag_routes._upload_to_collection_impl"
     ) as mock_upload:
         mock_svc.return_value.get_or_create_session_collection.return_value = "col-abc"
         mock_upload.return_value = ({"success": True}, 200)
@@ -47,7 +47,7 @@ def test_chat_upload_resolves_collection_and_delegates(app):
     mock_svc.return_value.get_or_create_session_collection.assert_called_once_with(
         "chat-1"
     )
-    mock_upload.assert_called_once_with("col-abc")
+    mock_upload.assert_called_once_with("col-abc", "openwebui")
     assert resp.status_code == 200
 
 
@@ -74,7 +74,7 @@ def test_chat_upload_open_mode_without_session(app):
     with patch(
         "local_deep_research.chat.service.ChatService"
     ) as mock_svc, patch(
-        "local_deep_research.research_library.routes.rag_routes.upload_to_collection"
+        "local_deep_research.research_library.routes.rag_routes._upload_to_collection_impl"
     ) as mock_upload:
         mock_svc.return_value.get_or_create_session_collection.return_value = "col-abc"
         mock_upload.return_value = ({"success": True}, 200)
@@ -85,3 +85,21 @@ def test_chat_upload_open_mode_without_session(app):
         )
     assert resp.status_code == 200
     mock_svc.return_value.get_or_create_session_collection.assert_called_once_with("chat-1")
+
+
+def test_capture_request_db_password_reads_g_user_password_open_mode(app):
+    """Open mode root cause: with no Flask session, capture_request_db_password
+    returns ``g.user_password`` (set by get_user_db_session via the service-user
+    env password). This is what lets chat_upload trigger auto-indexing."""
+    from flask import g
+
+    from local_deep_research.database.session_passwords import (
+        capture_request_db_password,
+    )
+
+    with app.test_request_context("/"):
+        g.user_password = "openwebui-local-password"
+        assert (
+            capture_request_db_password("openwebui")
+            == "openwebui-local-password"
+        )

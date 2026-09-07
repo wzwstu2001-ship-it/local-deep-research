@@ -894,6 +894,15 @@ def register_blueprints(app):
             if bp_obj is not None:
                 csrf.exempt(bp_obj)
 
+        # chat_upload is open-webui's (Phase 3) browser upload: like
+        # openai_compat it authenticates via the open-mode service user
+        # (get_openai_compat_username), not a browser session, so the browser
+        # fetch carries no CSRF token. Exempt just this one view — the rest of
+        # rag_bp is browser-facing and must keep CSRF protection.
+        _chat_upload_view = app.view_functions.get("rag.chat_upload")
+        if _chat_upload_view is not None:
+            csrf.exempt(_chat_upload_view)
+
     # Add favicon route
     # Exempt favicon from rate limiting
     @app.route("/favicon.ico")

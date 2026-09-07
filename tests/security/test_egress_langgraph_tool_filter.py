@@ -419,3 +419,32 @@ class TestMissingPrimaryDegradesToUnfiltered:
             primary=None,
         )
         assert _specialized(names) == {_PUBLIC_ENGINE, _PRIVATE_ENGINE}
+
+
+# ---------------------------------------------------------------------------
+# open-webui session runs (chat_id -> _session_collection_id) need MIXED
+# retrieval: local collection/lightrag AND public web search coexist. Under the
+# default ADAPTIVE scope a public primary would resolve PUBLIC_ONLY and strip
+# the local tools, making uploaded files unsearchable — the fix promotes such
+# runs to the internal BOTH scope. Regression for that promotion.
+# ---------------------------------------------------------------------------
+
+
+class TestSessionCollectionPromotesToBoth:
+    def test_session_collection_keeps_local_and_public_engines(self):
+        names, _ = _build_tool_names(
+            "adaptive",
+            {
+                _PUBLIC_ENGINE: {"description": "papers"},
+                _PUBLIC_ENGINE_2: {"description": "wiki"},
+                _PRIVATE_ENGINE: {"description": "docs"},
+            },
+            snapshot_extra={
+                "search.tool": _PUBLIC_ENGINE,
+                "_session_collection_id": "col-1",
+            },
+        )
+        # Without _session_collection_id, ADAPTIVE + public primary resolves
+        # PUBLIC_ONLY and drops the private engine; with it the run is promoted
+        # to BOTH so the local engine survives alongside the public one.
+        assert _specialized(names) == {_PUBLIC_ENGINE_2, _PRIVATE_ENGINE}
