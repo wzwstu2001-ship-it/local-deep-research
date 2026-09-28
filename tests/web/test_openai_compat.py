@@ -1,6 +1,8 @@
 """Unit tests for the OpenAI-compat chat helpers."""
 
 import json
+import queue
+from typing import Any
 
 from local_deep_research.web.openai_compat import (
     chat_completion_response,
@@ -9,6 +11,7 @@ from local_deep_research.web.openai_compat import (
     filter_sources_to_cited,
     last_user_message,
     sources_to_url_citations,
+    stream_chat_completion_sse,
 )
 
 
@@ -39,14 +42,57 @@ def test_last_user_message_skips_blank_user_turns():
 
 
 def test_chat_completion_response_shape():
+    """Default-arg call preserves the legacy ``message`` shape exactly so
+    callers and clients that don't know about reasoning_content /
+    annotations still see a backward-compatible payload (the field-level
+    assertions also document that the optional keys are absent in this
+    branch)."""
     resp = chat_completion_response("an answer", model="ldr")
     assert resp["object"] == "chat.completion"
     assert resp["model"] == "ldr"
     choices = resp["choices"]
     assert len(choices) == 1
-    assert choices[0]["message"] == {"role": "assistant", "content": "an answer"}
+    msg = choices[0]["message"]
+    assert msg["role"] == "assistant"
+    assert msg["content"] == "an answer"
+    assert "reasoning_content" not in msg
+    assert "annotations" not in msg
     assert choices[0]["finish_reason"] == "stop"
     assert "usage" in resp
+
+
+def test_chat_completion_response_includes_reasoning_when_provided():
+    """Non-empty ``reasoning_content`` surfaces as a separate field on
+    ``message`` for open-webui's thinking block."""
+    resp = chat_completion_response(
+        "final answer",
+        model="ldr",
+        reasoning_content="[init] starting\n\n[tool_call] searching PubMed",
+    )
+    msg = resp["choices"][0]["message"]
+    assert msg["role"] == "assistant"
+    assert msg["content"] == "final answer"
+    assert msg["reasoning_content"].startswith("[init] starting")
+    assert "[tool_call] searching PubMed" in msg["reasoning_content"]
+
+
+def test_chat_completion_response_omits_empty_reasoning():
+    """Empty ``reasoning_content`` omits the field entirely (backward compat)."""
+    resp = chat_completion_response("a", model="ldr", reasoning_content="")
+    msg = resp["choices"][0]["message"]
+    assert "reasoning_content" not in msg
+
+
+def test_chat_completion_response_carries_annotations():
+    """Citations are attached as ``message.annotations`` (same wire format
+    as the SSE content frame's ``delta.annotations``)."""
+    cit = {
+        "type": "url_citation",
+        "url_citation": {"url": "/library/document/1", "title": "doc"},
+    }
+    resp = chat_completion_response("a", model="ldr", citations=[cit])
+    msg = resp["choices"][0]["message"]
+    assert msg["annotations"] == [cit]
 
 
 def test_deduplicate_sources_and_remap_collapses_duplicate_citations():
@@ -265,3 +311,116 @@ def test_filter_sources_to_cited_partial_citation_with_out_of_range():
         "https://doc-2.example/2",
     ]
     assert [s["index"] for s in cited] == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# stream_chat_completion_sse — live-reasoning SSE generator
+# ---------------------------------------------------------------------------
+
+
+def _drain_sse(gen):
+    """Consume a stream_chat_completion_sse generator into a list of parsed
+    JSON payloads (skipping the trailing ``[DONE]`` sentinel)."""
+    payloads = []
+    for frame in gen:
+        if frame == "data: [DONE]\n\n":
+            continue
+        assert frame.startswith("data: "), f"unexpected frame: {frame!r}"
+        payloads.append(json.loads(frame[len("data: "):]))
+    return payloads
+
+
+def test_stream_sse_emits_role_first_then_done():
+    """The first frame must be the role marker and the stream must end
+    with ``[DONE]`` (so open-webui materialises the assistant message
+    before any reasoning deltas arrive)."""
+    q: "queue.Queue[dict[str, Any] | None]" = queue.Queue()
+    q.put_nowait({"phase": "init", "message": "starting", "metadata": {}})
+    q.put_nowait(None)
+
+    def summary_provider():
+        return ("answer", [])
+
+    frames = list(stream_chat_completion_sse(q, summary_provider, model="ldr"))
+    # Last frame is the [DONE] sentinel.
+    assert frames[-1] == "data: [DONE]\n\n"
+    # First parsed payload is the role frame.
+    payloads = _drain_sse(iter(frames[:-1]))
+    assert payloads[0]["choices"][0]["delta"]["role"] == "assistant"
+    assert payloads[0]["choices"][0]["delta"]["content"] == ""
+    assert payloads[-1]["choices"][0]["finish_reason"] == "stop"
+
+
+def test_stream_sse_emits_reasoning_per_queue_item():
+    """Each non-sentinel queue item becomes one ``reasoning_content``
+    delta frame, in order. The generator is a dumb relay — the callback
+    is expected to have filtered phases and prefixed ``[phase]`` already."""
+    q: "queue.Queue[dict[str, Any] | None]" = queue.Queue()
+    q.put_nowait({"phase": "init", "message": "[init] start", "metadata": {}})
+    q.put_nowait(
+        {
+            "phase": "tool_call",
+            "message": "[tool_call] searching PubMed",
+            "metadata": {},
+        }
+    )
+    q.put_nowait(
+        {
+            "phase": "synthesis",
+            "message": "[synthesis] assembling answer",
+            "metadata": {},
+        }
+    )
+    q.put_nowait(None)
+
+    def summary_provider():
+        return ("answer", [])
+
+    payloads = _drain_sse(
+        stream_chat_completion_sse(q, summary_provider, model="ldr")
+    )
+    reasoning = [
+        p["choices"][0]["delta"]["reasoning_content"]
+        for p in payloads
+        if "reasoning_content" in p["choices"][0]["delta"]
+    ]
+    assert reasoning == [
+        "[init] start\n",
+        "[tool_call] searching PubMed\n",
+        "[synthesis] assembling answer\n",
+    ]
+    # Reasoning frames must not carry content.
+    for payload in payloads:
+        delta = payload["choices"][0]["delta"]
+        if "reasoning_content" in delta:
+            assert "content" not in delta
+
+
+def test_stream_sse_carries_citations_on_content_frame():
+    """Citations land on the content frame's ``delta.annotations`` field
+    (same wire shape open-webui already reads in the legacy
+    ``chat_completion_stream`` path)."""
+    q: "queue.Queue[dict[str, Any] | None]" = queue.Queue()
+    q.put_nowait(None)
+
+    cit = {
+        "type": "url_citation",
+        "url_citation": {"url": "/library/document/1", "title": "doc"},
+    }
+
+    def summary_provider():
+        return ("answer text", [cit])
+
+    payloads = _drain_sse(
+        stream_chat_completion_sse(q, summary_provider, model="ldr")
+    )
+    # Find the content frame (role frame has no content; reasoning frames
+    # have no content either; only the content frame has delta.content set).
+    content_frames = [
+        p for p in payloads if p["choices"][0]["delta"].get("content") == "answer text"
+    ]
+    assert len(content_frames) == 1
+    delta = content_frames[0]["choices"][0]["delta"]
+    assert delta["annotations"] == [cit]
+    # No reasoning_content key on the content frame.
+    assert "reasoning_content" not in delta

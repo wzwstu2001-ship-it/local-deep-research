@@ -8,12 +8,34 @@ question-answering entry point (``quick_summary``).
 from __future__ import annotations
 
 import json
+import queue
 import re
 import time
 import uuid
-from typing import Any
+from typing import Any, Callable, Iterator
 
 from ..utilities.url_utils import canonical_url_key
+
+# Phases that represent an agent decision point and should surface as
+# "thinking" deltas to open-webui. The user picked "high-level decisions
+# only" — heartbeats (``agent_thinking``), per-tool observations
+# (``observation``), and sub-research chatter are intentionally excluded.
+# See ``stream_chat_completion_sse`` for the consumer.
+_REASONING_PHASES = frozenset(
+    {
+        "init",
+        "agent_reasoning",
+        "tool_call",
+        "synthesis",
+        "complete",
+    }
+)
+
+# Cap the per-event reasoning payload so a runaway LLM cannot ship an
+# unbounded frame through open-webui's renderer. LangGraph upstream
+# already bounds ``observation`` previews at 150 chars but ``tool_call``
+# args can run longer, so we defend the SSE delta here too.
+_MAX_REASONING_CHUNK_CHARS = 400
 
 # Adjacent duplicate citation markers, e.g. ``[1], [1]`` or ``[1]、[1]``.
 # After remapping collapses ``[11], [21]`` (same source) to ``[1], [1]``, this
@@ -256,8 +278,124 @@ def chat_completion_stream(
     return "".join(frames)
 
 
-def chat_completion_response(content: str, model: str) -> dict[str, Any]:
-    """Build an OpenAI ``chat.completion`` response body for ``content``."""
+def stream_chat_completion_sse(
+    reasoning_queue: "queue.Queue[dict[str, Any] | None]",
+    summary_provider: Callable[[], tuple[str, list[dict[str, Any]]]],
+    model: str,
+    timeout_seconds: float = 300.0,
+) -> Iterator[str]:
+    """Yield OpenAI SSE frames for one chat completion with live reasoning.
+
+    The frame sequence is:
+
+      1) role frame        — ``delta.role="assistant"`` (required first
+         frame so open-webui / DeepSeek / Qwen3 clients materialise the
+         assistant message before reasoning starts arriving).
+      2..N) reasoning frames — ``delta.reasoning_content="…"``, one per
+         item pushed into ``reasoning_queue``. The caller-side callback
+         is expected to filter to :data:`_REASONING_PHASES` and prefix
+         ``[phase]`` so the client sees human-readable thinking deltas;
+         this generator is a dumb relay.
+      N+1) content frame   — ``delta.content=summary`` plus optional
+         ``delta.annotations=citations`` (open-webui reads ``url_citation``
+         from annotations, same convention as :func:`chat_completion_stream`).
+      N+2) stop frame      — ``finish_reason="stop"``.
+      N+3) ``[DONE]`` sentinel.
+
+    ``summary_provider`` is called once after the worker thread pushes
+    the ``None`` sentinel — it owns the join + system teardown and must
+    return ``(summary_text, citations)``.
+
+    Args:
+        reasoning_queue: thread-safe queue populated by the worker
+            thread's progress callback. Items are dicts
+            ``{"phase", "message", "metadata"}``; ``None`` is the
+            sentinel meaning "agent done; call summary_provider".
+        summary_provider: zero-arg closure returning the final
+            ``(summary, citations)`` tuple.
+        model: model id echoed in every chunk.
+        timeout_seconds: hard upper bound on reasoning-stream length
+            before the generator stops waiting and emits the content
+            frame + ``[DONE]``. Defaults to 300s.
+    """
+    chunk_id = f"chatcmpl-{uuid.uuid4().hex}"
+    created = int(time.time())
+
+    def frame(delta: dict[str, Any], finish: str | None = None) -> str:
+        payload = {
+            "id": chunk_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [
+                {"index": 0, "delta": delta, "finish_reason": finish}
+            ],
+        }
+        return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    # 1) Role frame — required first frame.
+    yield frame({"role": "assistant", "content": ""})
+
+    # 2..N) Reasoning frames from the worker thread's queue. Loop until
+    # the worker pushes the ``None`` sentinel meaning ``run_fn`` is done
+    # and ``summary_provider`` is safe to call.
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            item = reasoning_queue.get(timeout=min(remaining, 1.0))
+        except queue.Empty:
+            # No event in the polling window; loop to re-check the
+            # deadline and thread liveness.
+            continue
+        if item is None:  # sentinel from worker thread
+            break
+        # Callback side already prefixed ``[phase]`` and capped message
+        # length; this generator is a dumb relay.
+        yield frame({"reasoning_content": f"{item['message']}\n"})
+
+    # 3) Content frame — synthesized after the agent thread joined.
+    summary, citations = summary_provider()
+    delta: dict[str, Any] = {"content": summary}
+    if citations:
+        delta["annotations"] = citations
+    yield frame(delta)
+
+    # 4) Stop frame.
+    yield frame({}, finish="stop")
+
+    # 5) [DONE] sentinel — Flask will flush and close the response.
+    yield "data: [DONE]\n\n"
+
+
+def chat_completion_response(
+    content: str,
+    model: str,
+    reasoning_content: str = "",
+    citations: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Build an OpenAI ``chat.completion`` response body.
+
+    When ``reasoning_content`` is non-empty, it is included in
+    ``choices[0].message`` as a separate field. open-webui collapses it
+    into a thinking block above the answer body. Empty
+    ``reasoning_content`` omits the field entirely — backward compat
+    (existing callers and tests asserting
+    ``message == {"role": "assistant", "content": ...}`` continue to hold).
+
+    When ``citations`` is non-empty, they are attached to ``message`` as
+    the ``annotations`` field (same wire format as the SSE content
+    frame's ``delta.annotations`` in :func:`chat_completion_stream`).
+    Field order in ``message``: ``role → content → reasoning_content →
+    annotations``.
+    """
+    message: dict[str, Any] = {"role": "assistant", "content": content}
+    if reasoning_content:
+        message["reasoning_content"] = reasoning_content
+    if citations:
+        message["annotations"] = citations
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex}",
         "object": "chat.completion",
@@ -266,7 +404,7 @@ def chat_completion_response(content: str, model: str) -> dict[str, Any]:
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": content},
+                "message": message,
                 "finish_reason": "stop",
             }
         ],
