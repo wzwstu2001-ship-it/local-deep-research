@@ -120,6 +120,29 @@ def _init_search_system(
                 "search.tool", settings_snapshot=settings_snapshot
             )
 
+        # Same fallback for search_strategy: default is ``source_based``,
+        # but every programmatic caller (``quick_summary``,
+        # ``build_streaming_search_system``) forwards user kwargs without
+        # explicitly setting ``search_strategy``, so without this block the
+        # snapshot's stored value (e.g. ``langgraph-agent``) was being
+        # silently dropped and every call landed on source-based — even
+        # for the open-webui /v1/chat/completions route, where the
+        # ``reasoning_content`` stream only exists on the LangGraph agent
+        # path. Mirror the search_tool pattern: honour the snapshot only
+        # when the caller did NOT pass an explicit value (the default
+        # sentinel still means "no preference, follow the stored setting").
+        if search_strategy == "source_based" and settings_snapshot:
+            try:
+                stored_strategy = get_setting_from_snapshot(
+                    "search.search_strategy",
+                    default=None,
+                    settings_snapshot=settings_snapshot,
+                )
+            except Exception:
+                stored_strategy = None
+            if stored_strategy and stored_strategy != "source_based":
+                search_strategy = stored_strategy
+
         if search_tool:
             search_engine = get_search(
                 search_tool,
