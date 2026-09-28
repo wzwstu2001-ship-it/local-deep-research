@@ -349,6 +349,10 @@ def build_streaming_search_system(
     retrievers: dict[str, Any] | None = None,
     llms: dict[str, Any] | None = None,
     username: str | None = None,
+    provider: str | None = None,
+    api_key: str | None = None,
+    settings: dict[str, Any] | None = None,
+    settings_override: dict[str, Any] | None = None,
     search_original_query: bool = True,
     settings_snapshot: dict[str, Any] | None = None,
     **kwargs: Any,
@@ -375,7 +379,44 @@ def build_streaming_search_system(
       before the worker thread starts, ensuring no early events are lost;
     - does NOT enter a try/finally itself — the caller controls
       teardown via ``run_fn``'s own finally.
+
+    ``settings_snapshot`` fallback (mirrors ``quick_summary``): when the
+    caller passes ``None`` or an empty dict — typical for the open-webui
+    OpenAI-compat route, whose ``_load_user_context_into_params`` cannot
+    open the service user's encrypted settings DB — this helper rebuilds
+    the snapshot via ``create_settings_snapshot()`` so ``LDR_LLM_*``
+    env vars (provider / model / endpoint URL / api_key) actually reach
+    ``get_llm()``. Without this fallback ``get_llm`` falls through to
+    its hardcoded default provider ``"ollama"``, which then explodes
+    because no model was configured.
     """
+    if not settings_snapshot:
+        snapshot_kwargs: dict[str, Any] = {}
+        if provider is not None:
+            snapshot_kwargs["provider"] = provider
+        if api_key is not None:
+            snapshot_kwargs["api_key"] = api_key
+        if (
+            not snapshot_kwargs
+            and settings is None
+            and settings_override is None
+        ):
+            logger.warning(
+                "No settings_snapshot or explicit config provided to "
+                "build_streaming_search_system(). Using defaults and "
+                "environment variables. For explicit control, pass "
+                "settings_snapshot=create_settings_snapshot(...)."
+            )
+        settings_snapshot = create_settings_snapshot(
+            base_settings=settings,
+            overrides=settings_override,
+            **snapshot_kwargs,
+        )
+        log_settings(
+            settings_snapshot,
+            "Created settings snapshot for streaming search system",
+        )
+
     if research_id is None:
         import uuid as _uuid
 
