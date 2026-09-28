@@ -46,8 +46,11 @@ def client():
 
 def test_chat_completions_returns_openai_shape(client):
     with patch(
-        "local_deep_research.api.research_functions.quick_summary",
-        return_value={"summary": "LightRAG is a graph-based RAG framework."},
+        "local_deep_research.api.research_functions.build_streaming_search_system",
+        return_value=(
+            None,
+            lambda: {"summary": "LightRAG is a graph-based RAG framework."},
+        ),
     ), patch(
         "local_deep_research.chat.service.ChatService"
     ) as mock_chat_svc:
@@ -132,8 +135,11 @@ def test_chat_completions_injects_session_collection_scope(client):
     ), patch(
         "local_deep_research.chat.service.ChatService"
     ) as mock_chat_svc, patch(
-        "local_deep_research.api.research_functions.quick_summary",
-        return_value={"summary": "scoped answer"},
+        "local_deep_research.api.research_functions.build_streaming_search_system",
+        return_value=(
+            None,
+            lambda: {"summary": "scoped answer"},
+        ),
     ) as mock_qs:
         mock_chat_svc.return_value.get_or_create_session_collection.return_value = "col-abc"
         mock_chat_svc.return_value.session_collection_has_index.return_value = False
@@ -169,8 +175,11 @@ def test_chat_completions_promotes_indexed_collection_to_primary(client):
     ), patch(
         "local_deep_research.chat.service.ChatService"
     ) as mock_chat_svc, patch(
-        "local_deep_research.api.research_functions.quick_summary",
-        return_value={"summary": "scoped answer"},
+        "local_deep_research.api.research_functions.build_streaming_search_system",
+        return_value=(
+            None,
+            lambda: {"summary": "scoped answer"},
+        ),
     ) as mock_qs:
         mock_chat_svc.return_value.get_or_create_session_collection.return_value = "col-abc"
         mock_chat_svc.return_value.session_collection_has_index.return_value = True
@@ -207,8 +216,11 @@ def test_chat_completions_scrubs_error_summary(client):
     ), patch(
         "local_deep_research.chat.service.ChatService"
     ) as mock_chat_svc, patch(
-        "local_deep_research.api.research_functions.quick_summary",
-        return_value={"summary": leaked},
+        "local_deep_research.api.research_functions.build_streaming_search_system",
+        return_value=(
+            None,
+            lambda: {"summary": leaked},
+        ),
     ):
         mock_chat_svc.return_value.get_or_create_session_collection.return_value = "col-abc"
         resp = client.post(
@@ -231,12 +243,17 @@ def test_chat_completions_open_mode_without_session(app):
     client = app.test_client()
     with patch(
         "local_deep_research.web.routes.openai_compat_routes._load_user_context_into_params",
-        side_effect=lambda p, u, **kw: p.update(username=u, settings_snapshot={}) or None,
+        side_effect=lambda p, u, **kw: (
+            p.update(username=u, settings_snapshot={}) or None
+        ),
     ), patch(
         "local_deep_research.chat.service.ChatService"
     ) as mock_svc, patch(
-        "local_deep_research.api.research_functions.quick_summary",
-        return_value={"summary": "ok"},
+        "local_deep_research.api.research_functions.build_streaming_search_system",
+        return_value=(
+            None,
+            lambda: {"summary": "ok"},
+        ),
     ):
         mock_svc.return_value.get_or_create_session_collection.return_value = "col-abc"
         resp = client.post(
@@ -270,14 +287,17 @@ def test_chat_completions_stream_returns_sse_with_citations(client):
     come back empty.
     """
     with patch(
-        "local_deep_research.api.research_functions.quick_summary",
-        return_value={
-            "summary": "回答正文参见 [1] 与 [2]",
-            "sources": [
-                {"title": "设备操作规程.pdf", "url": "/library/document/1"},
-                {"title": "外部网页", "link": "https://example.com"},
-            ],
-        },
+        "local_deep_research.api.research_functions.build_streaming_search_system",
+        return_value=(
+            None,
+            lambda: {
+                "summary": "回答正文参见 [1] 与 [2]",
+                "sources": [
+                    {"title": "设备操作规程.pdf", "url": "/library/document/1"},
+                    {"title": "外部网页", "link": "https://example.com"},
+                ],
+            },
+        ),
     ), patch(
         "local_deep_research.chat.service.ChatService"
     ) as mock_chat_svc:
@@ -305,8 +325,11 @@ def test_chat_completions_stream_returns_sse_with_citations(client):
 def test_chat_completions_stream_with_empty_sources(client):
     """Empty sources still yield a well-formed SSE stream with no annotations."""
     with patch(
-        "local_deep_research.api.research_functions.quick_summary",
-        return_value={"summary": "无引用回答", "sources": []},
+        "local_deep_research.api.research_functions.build_streaming_search_system",
+        return_value=(
+            None,
+            lambda: {"summary": "无引用回答", "sources": []},
+        ),
     ), patch(
         "local_deep_research.chat.service.ChatService"
     ) as mock_chat_svc:
@@ -326,3 +349,135 @@ def test_chat_completions_stream_with_empty_sources(client):
     body = resp.get_data(as_text=True)
     assert "data: [DONE]" in body
     assert '"url_citation"' not in body
+
+
+def _fake_build_emitting(events):
+    """Build a ``build_streaming_search_system`` side_effect that replays
+    ``events`` through the supplied progress callback inside ``run_fn``.
+
+    Used by the reasoning-rendering tests below so we can verify which
+    progress phases surface in the SSE stream / non-stream response body
+    without spinning up a real LangGraph agent.
+    """
+    def fake_build(query, progress_callback, **kwargs):
+        def run_fn():
+            for event in events:
+                progress_callback(*event)
+            return {"summary": "final answer", "sources": []}
+        return (None, run_fn)
+    return fake_build
+
+
+def test_chat_completions_stream_emits_reasoning_content(client):
+    """stream=true surfaces init / tool_call / synthesis deltas as
+    ``reasoning_content`` frames so open-webui's thinking block renders
+    the agent's decision trail above the answer body."""
+    events = [
+        ("Starting research", None, {"phase": "init"}),
+        ("Searching PubMed for X", None, {"phase": "tool_call"}),
+        ("Assembling answer", None, {"phase": "synthesis"}),
+    ]
+
+    with patch(
+        "local_deep_research.api.research_functions.build_streaming_search_system",
+        side_effect=_fake_build_emitting(events),
+    ), patch(
+        "local_deep_research.chat.service.ChatService"
+    ) as mock_chat_svc:
+        mock_chat_svc.return_value.get_or_create_session_collection.return_value = "col-abc"
+        mock_chat_svc.return_value.session_collection_has_index.return_value = False
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "ldr",
+                "chat_id": "chat-1",
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "data: [DONE]" in body
+    # Each filtered phase surfaces with the ``[phase]`` prefix the route
+    # stamps onto every line.
+    assert "[init]" in body
+    assert "[tool_call]" in body
+    assert "[synthesis]" in body
+    # The final answer lands on a content delta, never on reasoning_content.
+    assert '"content": "final answer"' in body
+
+
+def test_chat_completions_stream_drops_heartbeat_phases(client):
+    """Phases outside :data:`_REASONING_PHASES` (heartbeats, observations,
+    termination checks) never reach the SSE — the route filters before the
+    queue push so open-webui only sees the high-level decision trail."""
+    events = [
+        ("Starting", None, {"phase": "init"}),
+        ("Heartbeat step 1", None, {"phase": "agent_thinking"}),
+        ("Observation chunk", None, {"phase": "observation"}),
+        ("Decided enough", None, {"phase": "termination_check"}),
+        ("Synthesizing", None, {"phase": "synthesis"}),
+    ]
+
+    with patch(
+        "local_deep_research.api.research_functions.build_streaming_search_system",
+        side_effect=_fake_build_emitting(events),
+    ), patch(
+        "local_deep_research.chat.service.ChatService"
+    ) as mock_chat_svc:
+        mock_chat_svc.return_value.get_or_create_session_collection.return_value = "col-abc"
+        mock_chat_svc.return_value.session_collection_has_index.return_value = False
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "ldr",
+                "chat_id": "chat-1",
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+    body = resp.get_data(as_text=True)
+    assert "Heartbeat step 1" not in body
+    assert "Observation chunk" not in body
+    assert "Decided enough" not in body
+    # Filtered-in phases still appear.
+    assert "[init]" in body
+    assert "[synthesis]" in body
+
+
+def test_chat_completions_non_stream_includes_reasoning_content(client):
+    """The non-streaming path accumulates reasoning lines into
+    ``message.reasoning_content`` so open-webui's thinking block still
+    surfaces the agent's decision trail above the answer body even when
+    the client can't (or won't) follow the SSE stream."""
+    events = [
+        ("Starting", None, {"phase": "init"}),
+        ("Searching the library", None, {"phase": "tool_call"}),
+    ]
+
+    with patch(
+        "local_deep_research.api.research_functions.build_streaming_search_system",
+        side_effect=_fake_build_emitting(events),
+    ), patch(
+        "local_deep_research.chat.service.ChatService"
+    ) as mock_chat_svc:
+        mock_chat_svc.return_value.get_or_create_session_collection.return_value = "col-abc"
+        mock_chat_svc.return_value.session_collection_has_index.return_value = False
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "ldr",
+                "chat_id": "chat-1",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+    assert resp.status_code == 200
+    body = resp.get_json()
+    msg = body["choices"][0]["message"]
+    assert msg["content"] == "final answer"
+    assert msg["reasoning_content"].startswith("[init]")
+    assert "[tool_call]" in msg["reasoning_content"]
+    assert "Searching the library" in msg["reasoning_content"]

@@ -342,6 +342,97 @@ def quick_summary(
 
 
 @no_db_settings
+def build_streaming_search_system(
+    query: str,
+    progress_callback: Callable[[str, int | None, dict[str, Any]], None],
+    research_id: str | None = None,
+    retrievers: dict[str, Any] | None = None,
+    llms: dict[str, Any] | None = None,
+    username: str | None = None,
+    search_original_query: bool = True,
+    settings_snapshot: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> tuple[Any, Callable[[], dict[str, Any]]]:
+    """Construct an ``AdvancedSearchSystem`` with a progress callback and
+    return ``(system, run_fn)`` for streaming callers.
+
+    Mirrors :func:`quick_summary`'s setup (settings snapshot handling,
+    retriever / LLM registration, thread search context, kwargs forward
+    to ``_init_search_system``) but **does not** run the search itself —
+    the caller invokes ``run_fn`` on a background thread so progress
+    events can stream live into a queue / SSE response while
+    ``analyze_topic`` is still in flight.
+
+    ``run_fn`` returns the same result-dict shape as ``quick_summary``
+    (with keys ``summary``, ``findings``, ``iterations``, ``questions``,
+    ``formatted_findings``, ``sources``, ``research_id``) and closes the
+    system in its own ``finally`` so resource cleanup is deterministic
+    regardless of which thread finishes first.
+
+    Unlike ``quick_summary``, this helper:
+
+    - sets up the system eagerly so the caller can register the callback
+      before the worker thread starts, ensuring no early events are lost;
+    - does NOT enter a try/finally itself — the caller controls
+      teardown via ``run_fn``'s own finally.
+    """
+    if research_id is None:
+        import uuid as _uuid
+
+        research_id = str(_uuid.uuid4())
+
+    search_context = {
+        "research_id": research_id,
+        "research_query": query,
+        "research_mode": kwargs.get("research_mode", "quick"),
+        "research_phase": "init",
+        "search_iteration": 0,
+        "search_engine_selected": kwargs.get("search_tool"),
+        "username": username,
+        "user_password": kwargs.get("user_password"),
+        "settings_snapshot": settings_snapshot or {},
+    }
+    set_search_context(search_context)
+
+    init_kwargs = {k: v for k, v in kwargs.items() if k != "research_mode"}
+    init_kwargs["username"] = username
+    init_kwargs["research_id"] = research_id
+    init_kwargs["research_context"] = search_context
+    init_kwargs["search_original_query"] = search_original_query
+    init_kwargs["progress_callback"] = progress_callback
+
+    system = _init_search_system(
+        retrievers=retrievers,
+        llms=llms,
+        **init_kwargs,
+    )
+
+    def run_fn() -> dict[str, Any]:
+        try:
+            results = system.analyze_topic(query)
+            if results is None:
+                results = {}
+            if results and "current_knowledge" in results:
+                summary = results["current_knowledge"]
+            else:
+                summary = "Unable to generate summary for the query."
+            return {
+                "research_id": research_id,
+                "summary": summary,
+                "findings": results.get("findings", []),
+                "iterations": results.get("iterations", 0),
+                "questions": results.get("questions", {}),
+                "formatted_findings": results.get("formatted_findings", ""),
+                "sources": results.get("all_links_of_system", []),
+            }
+        finally:
+            _close_system(system)
+            clear_search_context()
+
+    return system, run_fn
+
+
+@no_db_settings
 def generate_report(
     query: str,
     output_file: str | None = None,

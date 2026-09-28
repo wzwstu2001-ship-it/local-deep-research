@@ -8,7 +8,10 @@ research/retrieval path) and returns an OpenAI ``chat.completion`` body.
 
 from __future__ import annotations
 
-from flask import Blueprint, Response, jsonify, request
+import queue
+import threading
+
+from flask import Blueprint, Response, jsonify, request, stream_with_context
 from loguru import logger
 
 from ...security.decorators import require_json_body
@@ -19,12 +22,14 @@ from ..api import (
     get_openai_compat_username,
 )
 from ..openai_compat import (
+    _MAX_REASONING_CHUNK_CHARS,
+    _REASONING_PHASES,
     chat_completion_response,
-    chat_completion_stream,
     deduplicate_sources_and_remap,
     filter_sources_to_cited,
     last_user_message,
     sources_to_url_citations,
+    stream_chat_completion_sse,
 )
 
 openai_compat_bp = Blueprint("openai_compat", __name__, url_prefix="/v1")
@@ -77,7 +82,7 @@ def chat_completions():
     try:
         # Import here to avoid the research-stack import cycle, matching the
         # existing /api/v1/quick_summary handler.
-        from ...api.research_functions import quick_summary
+        from ...api.research_functions import build_streaming_search_system
 
         # Session isolation (spec §9, fail-closed): open-webui forwards the
         # conversation id as chat_id (accept a few spellings). Missing chat_id
@@ -136,7 +141,108 @@ def chat_completions():
         if ChatService(username).session_collection_has_index(collection_id):
             settings_snapshot["search.tool"] = f"collection_{collection_id}"
 
-        result = quick_summary(query, search_strategy="langgraph-agent", **params)
+        # Both branches share the same phase-filter + format rule; only the
+        # sink differs (queue push for SSE vs. list append for the
+        # non-stream message body). Keeping the formatter as a closure means
+        # adding a new phase is a one-line change in _REASONING_PHASES.
+        def _format_reasoning(metadata, message: str) -> str | None:
+            phase = (metadata or {}).get("phase", "")
+            if phase not in _REASONING_PHASES:
+                return None
+            clipped = (message or "")[:_MAX_REASONING_CHUNK_CHARS]
+            return f"[{phase}] {clipped}"
+
+        if data.get("stream"):
+            reasoning_queue: queue.Queue = queue.Queue(maxsize=1024)
+
+            def _push_progress(message: str, percent, metadata) -> None:
+                line = _format_reasoning(metadata, message)
+                if line is None:
+                    return
+                item = {
+                    "phase": (metadata or {}).get("phase", ""),
+                    "message": line,
+                    "metadata": metadata or {},
+                }
+                try:
+                    reasoning_queue.put_nowait(item)
+                except queue.Full:
+                    # Back-pressure / client disconnect: silently drop.
+                    pass
+
+            _, run_fn = build_streaming_search_system(
+                query,
+                progress_callback=_push_progress,
+                **params,
+            )
+            result_holder: dict = {}
+            error_holder: dict = {"err": None}
+
+            def _worker() -> None:
+                try:
+                    result_holder["result"] = run_fn()
+                except BaseException as exc:  # noqa: BLE001
+                    error_holder["err"] = exc
+                finally:
+                    # Sentinel — unblocks the SSE generator's queue loop
+                    # even when the worker raised before producing a result.
+                    reasoning_queue.put_nowait(None)
+
+            thread = threading.Thread(target=_worker, daemon=True)
+            thread.start()
+
+            def _summary_provider() -> tuple[str, list[dict]]:
+                thread.join()
+                err = error_holder["err"]
+                if err is not None:
+                    # The worker's exception must propagate into the SSE
+                    # generator's caller — the route's outer try/except
+                    # converts it into a 504 / 500 response. Re-raising
+                    # from inside ``_summary_provider`` keeps the SSE
+                    # payload empty (only the [DONE] sentinel flushes)
+                    # and lets the exception bubble cleanly.
+                    raise err  # noqa: TRY301
+                result = result_holder.get("result", {})
+                _scrub_error_fields(result)
+                summary = result.get("summary", "")
+                sources = result.get("sources", [])
+                summary, sources = deduplicate_sources_and_remap(summary, sources)
+                summary, sources = filter_sources_to_cited(summary, sources)
+                return summary, sources_to_url_citations(sources)
+
+            response = Response(
+                stream_with_context(
+                    stream_chat_completion_sse(
+                        reasoning_queue,
+                        _summary_provider,
+                        model,
+                    )
+                ),
+                mimetype="text/event-stream",
+            )
+            # Critical for SSE: disable proxy buffering so nginx / cloudflare
+            # don't hold frames until the response body fully forms.
+            response.headers["X-Accel-Buffering"] = "no"
+            response.headers["Cache-Control"] = "no-cache"
+            return response
+
+        # Non-streaming path: accumulate reasoning lines into a single
+        # newline-delimited string and attach it to message.reasoning_content
+        # so open-webui's thinking-block renderer still surfaces the agent's
+        # decision trail above the answer body.
+        non_stream_lines: list[str] = []
+
+        def _accumulate_progress(message: str, percent, metadata) -> None:
+            line = _format_reasoning(metadata, message)
+            if line is not None:
+                non_stream_lines.append(line)
+
+        _, run_fn = build_streaming_search_system(
+            query,
+            progress_callback=_accumulate_progress,
+            **params,
+        )
+        result = run_fn()
         _scrub_error_fields(result)
 
         summary = result.get("summary", "")
@@ -145,12 +251,14 @@ def chat_completions():
         summary, sources = filter_sources_to_cited(summary, sources)
         citations = sources_to_url_citations(sources)
 
-        if data.get("stream"):
-            return Response(
-                chat_completion_stream(summary, model, citations),
-                mimetype="text/event-stream",
+        return jsonify(
+            chat_completion_response(
+                summary,
+                model,
+                reasoning_content="\n\n".join(non_stream_lines),
+                citations=citations,
             )
-        return jsonify(chat_completion_response(summary, model))
+        )
     except TimeoutError:
         logger.exception("OpenAI-compat chat request timed out")
         return jsonify({"error": {"message": "request timed out"}}), 504
