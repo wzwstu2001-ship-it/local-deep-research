@@ -263,11 +263,16 @@ def test_chat_completions_stream_returns_sse_with_citations(client):
     open-webui's streaming path extracts ``url_citation`` from
     ``delta.annotations``, so the merged sources (FAISS + LightRAG + searxng)
     render as citation cards. This pins that LDR no longer drops ``sources``.
+
+    The mock summary references both sources with ``[N]`` markers — the
+    strict citation filter downstream drops every source the answer body
+    never named, so without markers the citation panel would (correctly)
+    come back empty.
     """
     with patch(
         "local_deep_research.api.research_functions.quick_summary",
         return_value={
-            "summary": "回答正文",
+            "summary": "回答正文参见 [1] 与 [2]",
             "sources": [
                 {"title": "设备操作规程.pdf", "url": "/library/document/1"},
                 {"title": "外部网页", "link": "https://example.com"},

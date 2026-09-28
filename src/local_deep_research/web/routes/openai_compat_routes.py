@@ -22,6 +22,7 @@ from ..openai_compat import (
     chat_completion_response,
     chat_completion_stream,
     deduplicate_sources_and_remap,
+    filter_sources_to_cited,
     last_user_message,
     sources_to_url_citations,
 )
@@ -141,6 +142,7 @@ def chat_completions():
         summary = result.get("summary", "")
         sources = result.get("sources", [])
         summary, sources = deduplicate_sources_and_remap(summary, sources)
+        summary, sources = filter_sources_to_cited(summary, sources)
         citations = sources_to_url_citations(sources)
 
         if data.get("stream"):

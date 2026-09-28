@@ -122,6 +122,82 @@ def deduplicate_sources_and_remap(
     return summary, deduped
 
 
+def filter_sources_to_cited(
+    summary: str, sources: list[dict[str, Any]]
+) -> tuple[str, list[dict[str, Any]]]:
+    """Filter ``sources`` down to the subset whose ``[N]`` marker actually
+    appears in ``summary``, then re-number the survivors to a contiguous
+    1-based sequence and remap the markers in ``summary``.
+
+    Pair with :func:`deduplicate_sources_and_remap` upstream — duplicate
+    sources collapse to one entry first, then this pass drops every source
+    the LLM never named so the citation panel stays aligned with the
+    answer body.
+
+    Behaviour:
+
+    - When ``summary`` carries no ``[N]`` markers at all, returns
+      ``(summary, [])`` (strict mode): the open-webui citation panel ends
+      up empty instead of dangling extras, matching the body's silence.
+    - ``[N]`` markers whose index is outside the source range are NOT
+      counted as cited — the source list shrinks to whatever the
+      in-range subset produces, and the out-of-range marker is preserved
+      verbatim in the summary (it will render as an empty chip in the
+      panel rather than silently rewriting the LLM's choice).
+    - Composite brackets ``[1, 3, 7]`` are remapped to a contiguous
+      ``[1, 2, 3]`` form once the un-referenced sources are filtered out.
+    """
+    if not isinstance(summary, str) or not summary:
+        return summary or "", list(sources) if sources else []
+
+    bracket_re = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
+    cited_raw = [
+        int(part)
+        for match in bracket_re.finditer(summary)
+        for part in re.split(r"\s*,\s*", match.group(1))
+        if part.isdigit()
+    ]
+    if not cited_raw:
+        return summary, []
+
+    # First pass: assign a contiguous new index to every cited source, in
+    # the original list order. ``cited_set`` doubles as a membership test
+    # for the second pass so a source cited at the same index twice (e.g.
+    # once by an ``[N]`` and once by a ``[N, N]`` composite) still gets
+    # exactly one slot.
+    remap: dict[int, int] = {}
+    cited_set: set[int] = set()
+    for position, source in enumerate(sources):
+        if not isinstance(source, dict):
+            continue
+        old_index = _source_index(source, position)
+        if old_index not in cited_set and old_index in cited_raw:
+            cited_set.add(old_index)
+            remap[old_index] = len(cited_set)
+
+    # Second pass: drop un-cited sources, preserve order, and stamp each
+    # survivor's ``index`` with its new position so downstream consumers
+    # (citation panel, SSE annotations) see a contiguous 1-based numbering.
+    new_sources: list[dict[str, Any]] = []
+    for position, source in enumerate(sources):
+        if not isinstance(source, dict):
+            continue
+        old_index = _source_index(source, position)
+        if old_index in cited_set:
+            new_source = dict(source)
+            new_source["index"] = remap[old_index]
+            new_sources.append(new_source)
+
+    # Remap markers via the existing helper — it preserves out-of-range
+    # indices (remap miss → original value) and re-emits composite
+    # brackets cleanly.
+    new_summary = bracket_re.sub(
+        lambda m: _remap_bracket(m, remap), summary
+    )
+
+    return new_summary, new_sources
+
+
 def sources_to_url_citations(
     sources: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
