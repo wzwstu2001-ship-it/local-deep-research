@@ -441,6 +441,12 @@ def build_streaming_search_system(
     init_kwargs["research_context"] = search_context
     init_kwargs["search_original_query"] = search_original_query
     init_kwargs["progress_callback"] = progress_callback
+    # Critical: ``_init_search_system`` reads settings_snapshot directly
+    # to pick the LLM provider — without this line the fallback rebuild
+    # above stays in the thread-local search_context and never reaches
+    # ``get_llm``, which then falls through to its hardcoded ``"ollama"``
+    # default and raises on missing model.
+    init_kwargs["settings_snapshot"] = settings_snapshot
 
     system = _init_search_system(
         retrievers=retrievers,
