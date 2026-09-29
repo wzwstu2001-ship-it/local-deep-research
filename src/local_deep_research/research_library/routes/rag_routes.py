@@ -2236,8 +2236,17 @@ def get_collection_documents(collection_id):
                 )
                 has_text_db = bool(has_text_db)
 
-                # Use title if available, otherwise filename
-                display_title = doc.title or doc.filename or "Untitled"
+                # Use title if available, otherwise filename. Prefer the
+                # original (pre-sanitization) upload name when set so the
+                # Library UI listing shows the user's real filename for
+                # CJK / accented / etc. uploads instead of the
+                # werkzeug.secure_filename()-sanitized ASCII fallback.
+                display_title = (
+                    doc.title
+                    or doc.original_filename
+                    or doc.filename
+                    or "Untitled"
+                )
 
                 # Get source type name
                 source_type_name = (

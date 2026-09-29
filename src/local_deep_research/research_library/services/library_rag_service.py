@@ -1820,7 +1820,15 @@ class LibraryRAGService:
             if not document.text_content:
                 return {"status": "error", "error": "Document has no text content"}
             file_source = (
+                # Preserve the raw (pre-sanitization) upload name when
+                # available; ``document.filename`` is the
+                # werkzeug.secure_filename()-sanitized ASCII-only value used
+                # on the filesystem. LightRAG stores this as the chunk's
+                # ``file_path`` and the search leg surfaces it via
+                # ``Path(file_path).name`` for citation titles — so a CJK
+                # upload name only survives if it lands here.
                 document.title
+                or document.original_filename
                 or document.filename
                 or document.original_url
                 or f"document_{document_id}"
@@ -2034,10 +2042,22 @@ class LibraryRAGService:
                         "source": document.original_url,
                         "document_id": document_id,  # Add document ID for source linking
                         "collection_id": collection_id,  # Add collection ID
+                        # Use the same pre-sanitization-aware fallback as the
+                        # chunk's ``document_title`` column below so the
+                        # langchain_doc metadata the text_splitter carries
+                        # into its chunks stays consistent. Even though
+                        # chunk_inputs overrides this with shared_chunk_metadata
+                        # before save, downstream consumers reading the
+                        # LangchainDocument directly (or any splitter that
+                        # preserves metadata without an override) see the
+                        # human-readable CJK name instead of the sanitized
+                        # ASCII fallback.
                         "title": document.title
+                        or document.original_filename
                         or document.filename
                         or "Untitled",
                         "document_title": document.title
+                        or document.original_filename
                         or document.filename
                         or "Untitled",  # Add for compatibility
                         "authors": document.authors,
