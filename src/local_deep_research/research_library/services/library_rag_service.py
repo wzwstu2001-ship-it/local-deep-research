@@ -1646,7 +1646,22 @@ class LibraryRAGService:
             if not document.text_content:
                 return {"status": "needs_serial_write"}
 
-            title = document.title or document.filename or "Untitled"
+            title = (
+                # Mirror the same fallback chain used in
+                # ``_index_document_locked`` (line 2093+). The
+                # ``_prepare_document`` → ``_write_prepared_document``
+                # path is taken by ``index_documents_parallel`` whenever
+                # ``_run_one`` uses the parallel-prepared pipeline —
+                # including the auto-indexer invoked right after
+                # ``_upload_to_collection_impl``. Without
+                # ``original_filename`` here, CJK / accented upload
+                # names get stripped by the same Werkzeug sanitization
+                # the upload path already escaped on the Document row.
+                document.title
+                or document.original_filename
+                or document.filename
+                or "Untitled"
+            )
             metadata = {
                 "source": document.original_url,
                 "document_id": document_id,
