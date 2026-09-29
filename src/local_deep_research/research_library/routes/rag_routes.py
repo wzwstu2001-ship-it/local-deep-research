@@ -2022,6 +2022,13 @@ def _upload_to_collection_impl(collection_id, username):
                             id=doc_id,
                             source_type_id=source_type.id,
                             filename=filename,
+                            # Preserve the raw (pre-sanitization) filename so
+                            # downstream consumers can render human-readable
+                            # titles in the user's language. sanitize_filename
+                            # strips non-ASCII via werkzeug.secure_filename,
+                            # so document.filename alone is ASCII-only and
+                            # loses Chinese / accented / etc. upload names.
+                            original_filename=file.filename,
                             document_hash=file_hash,
                             file_size=len(file_content),
                             file_type=file_type,

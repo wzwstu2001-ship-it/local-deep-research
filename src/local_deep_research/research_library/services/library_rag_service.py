@@ -2071,7 +2071,15 @@ class LibraryRAGService:
                 )
 
                 document_title = (
-                    document.title or document.filename or "Untitled"
+                    # Preserve the original (pre-sanitization) upload name
+                    # when present. ``document.filename`` is the
+                    # werkzeug.secure_filename()-sanitized ASCII-only value
+                    # used on the filesystem; for human-readable titles (esp.
+                    # CJK names), prefer the raw upload before any fallbacks.
+                    document.title
+                    or document.original_filename
+                    or document.filename
+                    or "Untitled"
                 )
                 # Mirrors the parent doc's metadata dict built above (source,
                 # ids, bibliographic fields) so it survives into each
