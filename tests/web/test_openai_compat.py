@@ -313,6 +313,53 @@ def test_filter_sources_to_cited_partial_citation_with_out_of_range():
     assert [s["index"] for s in cited] == [1, 2]
 
 
+def test_filter_sources_to_cited_orders_by_citation_order_not_original():
+    """When the LLM cites sources in an order different from the original
+    sources list order, ``new_sources`` must follow the citation order so
+    that open-webui's position-based mapping (``sourceIds[N-1]``) renders the
+    correct title for each ``[N]`` marker in the text.
+
+    Regression test for the citation misalignment seen in open-webui:
+    library search returns sources in relevance order, but the LLM cites
+    them in a content-driven order. Position-based mapping on the client
+    side then points ``[N]`` at the wrong document.
+    """
+    sources = [
+        {"url": "https://a/", "index": 1},
+        {"url": "https://b/", "index": 2},
+        {"url": "https://c/", "index": 3},
+    ]
+    summary = "见 [3] 见 [1] 见 [2]"
+    new_summary, cited = filter_sources_to_cited(summary, sources)
+    # After fix: new_sources follows citation order [3, 1, 2].
+    assert new_summary == "见 [1] 见 [2] 见 [3]"
+    assert [s["index"] for s in cited] == [1, 2, 3]
+    assert [s["url"] for s in cited] == [
+        "https://c/",
+        "https://a/",
+        "https://b/",
+    ]
+
+
+def test_filter_sources_to_cited_citation_order_dedups_repeats_in_text():
+    """Repeated ``[N]`` markers in the summary must not duplicate the
+    source in the citations panel — each cited source appears exactly once,
+    in its FIRST citation order position."""
+    sources = [
+        {"url": "https://a/", "index": 1},
+        {"url": "https://b/", "index": 2},
+        {"url": "https://c/", "index": 3},
+    ]
+    summary = "见 [3] 又见 [1] 再见 [3] 末见 [2]"
+    new_summary, cited = filter_sources_to_cited(summary, sources)
+    assert [s["url"] for s in cited] == [
+        "https://c/",
+        "https://a/",
+        "https://b/",
+    ]
+    assert [s["index"] for s in cited] == [1, 2, 3]
+
+
 # ---------------------------------------------------------------------------
 # stream_chat_completion_sse — live-reasoning SSE generator
 # ---------------------------------------------------------------------------

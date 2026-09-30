@@ -182,33 +182,51 @@ def filter_sources_to_cited(
     if not cited_raw:
         return summary, []
 
-    # First pass: assign a contiguous new index to every cited source, in
-    # the original list order. ``cited_set`` doubles as a membership test
-    # for the second pass so a source cited at the same index twice (e.g.
-    # once by an ``[N]`` and once by a ``[N, N]`` composite) still gets
-    # exactly one slot.
-    remap: dict[int, int] = {}
-    cited_set: set[int] = set()
+    # First pass: walk ``sources`` in original list order to record
+    # ``old_to_source`` — the dict that lets the second pass look up the
+    # actual source by its old index. We intentionally do NOT assign
+    # ``remap`` here; that must happen in citation order (second pass)
+    # so the new 1-based numbering matches the order in which markers
+    # appear in ``summary``.
+    old_to_source: dict[int, dict[str, Any]] = {}
     for position, source in enumerate(sources):
         if not isinstance(source, dict):
             continue
         old_index = _source_index(source, position)
-        if old_index not in cited_set and old_index in cited_raw:
-            cited_set.add(old_index)
-            remap[old_index] = len(cited_set)
+        if old_index not in old_to_source:
+            old_to_source[old_index] = source
 
-    # Second pass: drop un-cited sources, preserve order, and stamp each
-    # survivor's ``index`` with its new position so downstream consumers
-    # (citation panel, SSE annotations) see a contiguous 1-based numbering.
+    # Second pass: build ``new_sources`` in CITATION ORDER — the order in
+    # which ``[N]`` markers actually appear in ``summary``. This is what
+    # open-webui's citation panel expects: it reads ``sourceIds`` position-
+    # ally (via ``sourceIds[N-1]`` for marker ``[N]`` in
+    # ``Markdown/SourceToken.svelte``) and renders the matching title in a
+    # numbered list. Returning sources in their original list order (e.g.
+    # library-search relevance order) would mis-align every ``[N]`` whose
+    # citation order diverges from retrieval order — exactly the symptom
+    # the user reported (panel rows showing wrong / out-of-order titles).
+    #
+    # ``remap`` is also filled in here so the new 1-based numbering is
+    # the citation order, not the retrieval order.
+    #
+    # ``seen`` drops repeated markers (``[3]... [3]...`` or ``[1, 3, 1]``)
+    # so each cited source still gets exactly one slot, at its FIRST
+    # citation-order position.
     new_sources: list[dict[str, Any]] = []
-    for position, source in enumerate(sources):
-        if not isinstance(source, dict):
+    remap: dict[int, int] = {}
+    seen: set[int] = set()
+    for old_index in cited_raw:
+        if old_index in seen:
             continue
-        old_index = _source_index(source, position)
-        if old_index in cited_set:
-            new_source = dict(source)
-            new_source["index"] = remap[old_index]
-            new_sources.append(new_source)
+        if old_index not in old_to_source:
+            # Out-of-range marker preserved verbatim by the remap pass
+            # below — nothing to emit for it here.
+            continue
+        seen.add(old_index)
+        remap[old_index] = len(remap) + 1
+        new_source = dict(old_to_source[old_index])
+        new_source["index"] = remap[old_index]
+        new_sources.append(new_source)
 
     # Remap markers via the existing helper — it preserves out-of-range
     # indices (remap miss → original value) and re-emits composite
