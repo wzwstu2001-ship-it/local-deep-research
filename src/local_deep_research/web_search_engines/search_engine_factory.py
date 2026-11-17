@@ -122,7 +122,14 @@ def create_search_engine(
         return RetrieverSearchEngine(
             retriever=retriever,
             name=engine_name,
-            max_results=kwargs.get("max_results", 10),
+            # Default 30 (was 10): retriever results (e.g. LightRAG's
+            # ``query_data`` chunks) were being capped here before the
+            # agent's downstream synthesis saw them, producing
+            # "Synthesizing 10 sources" instead of the actual 19+ chunks
+            # the retriever returned. 30 matches the user-requested
+            # LightRAG ceiling without overflowing the LLM context
+            # window for the most common retriever outputs.
+            max_results=kwargs.get("max_results", 30),
             programmatic_mode=programmatic_mode,
         )
 

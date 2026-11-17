@@ -1006,7 +1006,9 @@ class TestRetrieverPath:
                 assert call_kwargs["max_results"] == 25
 
     def test_retriever_default_max_results(self):
-        """Default max_results=10 when not specified."""
+        """Default max_results=30 when not specified (was 10; raised so
+        LightRAG's 19+ chunks aren't truncated to 10 before the agent's
+        downstream synthesis)."""
         from local_deep_research.web_search_engines.search_engine_factory import (
             create_search_engine,
         )
@@ -1025,7 +1027,7 @@ class TestRetrieverPath:
                     settings_snapshot={"x": 1},
                 )
                 call_kwargs = mock_cls.call_args[1]
-                assert call_kwargs["max_results"] == 10
+                assert call_kwargs["max_results"] == 30
 
 
 # ---------------------------------------------------------------------------
